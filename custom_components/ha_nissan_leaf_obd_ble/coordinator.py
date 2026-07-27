@@ -28,6 +28,7 @@ from .const import (
     STORAGE_VERSION,
 )
 from .generations import get_extra_commands_for_generation
+from .metrics import normalize_metrics
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -108,6 +109,15 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
             self._generation_extra_commands: dict = get_extra_commands_for_generation(
                 self._generation, nominal_ah=self._nominal_ah
             )
+            self._normalize_metrics(self._cache_data)
+
+    def _normalize_metrics(self, data: dict[str, Any]) -> bool:
+        """Remove invalid odometer values and keep calculated SOH consistent."""
+        odometer = data.get("odometer")
+        changed = normalize_metrics(data, self._nominal_ah)
+        if odometer is not None and "odometer" not in data:
+            _LOGGER.warning("Discarding invalid odometer value: %s", odometer)
+        return changed
 
     # ------------------------------------------------------------------
     # Persistence
@@ -122,12 +132,15 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
         """
         stored = await self._store.async_load()
         if stored and isinstance(stored, dict):
-            self._cache_data = stored
+            self._cache_data = dict(stored)
+            normalized = self._normalize_metrics(self._cache_data)
             _LOGGER.debug(
                 "Loaded %d persisted sensor values for %s",
                 len(stored),
                 self._address,
             )
+            if normalized:
+                await self._async_save_cache()
 
     async def _async_save_cache(self) -> None:
         """Persist the current cache to storage."""
@@ -178,6 +191,9 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
 
         if new_data is None:
             raise UpdateFailed("OBD adapter returned no data (connection failed)")
+
+        new_data = dict(new_data)
+        self._normalize_metrics(new_data)
 
         if not new_data:
             # Car is in range but turned off — keep slow polling

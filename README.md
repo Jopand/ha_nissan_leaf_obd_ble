@@ -40,7 +40,7 @@ Advertised-name prefixes are matched case-insensitively, so variants such as
 |---|---|---|
 | ZE0 | 2010–2017 | Odometer via passive CAN broadcast; ZE0 battery decoder |
 | AZE0 | 2017–2018 | Same as ZE0 profile |
-| ZE1 | 2018+ | Active KWP2000 odometer; includes e-Pedal sensor |
+| ZE1 | 2018+ | Active diagnostic odometer query; includes e-Pedal sensor |
 | Auto | All | All sensors enabled; uses ZE1 decoders (ZE0/AZE0 owners should pick their generation for accurate battery data) |
 
 ---
@@ -107,7 +107,8 @@ the integration's **Configure** button.
 | Entity | Unit | Description |
 |---|---|---|
 | `sensor.nissan_leaf_state_of_charge` | % | Battery charge level |
-| `sensor.nissan_leaf_hv_battery_health` | % | Battery state of health |
+| `sensor.nissan_leaf_state_of_health` | % | Calculated SOH based on present Ah and the selected new-pack capacity |
+| `sensor.nissan_leaf_hv_battery_health` | % | Nissan battery Health Index (Hx), which is separate from SOH |
 | `sensor.nissan_leaf_hv_battery_capacity` | Ah | Battery capacity |
 | `sensor.nissan_leaf_hv_battery_voltage` | V | HV battery pack voltage |
 | `sensor.nissan_leaf_hv_battery_current_1` | A | Pack current (channel 1) |
@@ -164,13 +165,18 @@ After setup, click **Configure** on the integration card to adjust:
 
 | Option | Default | Description |
 |---|---|---|
-| Battery size | 30 kWh / 79.48 Ah | Nominal capacity used to calculate State of Health |
+| Battery size | 30 kWh / 79.48 Ah | New-pack capacity reference used to calculate State of Health |
 | Fast poll interval | 10 s | Polling rate when the car is on and in range |
 | Slow poll interval | 300 s | Polling rate when in range but car is off |
 | Extra-slow poll interval | 3600 s | Polling rate when out of BLE range |
 | BLE service UUID | `0000ffe0-…` | GATT service UUID for the adapter |
 | BLE read characteristic UUID | `0000ffe1-…` | Read characteristic UUID |
 | BLE write characteristic UUID | `0000ffe1-…` | Write characteristic UUID |
+
+Calculated SOH is the current BMS capacity divided by the selected new-pack
+capacity reference. The references are 66 Ah (24 kWh), 79.48 Ah (30 kWh),
+115 Ah (40 kWh), and 176 Ah (62 kWh). Hx is reported separately and is not
+expected to equal SOH.
 
 ---
 

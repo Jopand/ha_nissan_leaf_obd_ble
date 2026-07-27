@@ -37,13 +37,12 @@ GENERATION_OPTIONS: dict[str, str] = {
     GENERATION_AUTO: "Auto — all generations (recommended if unsure)",
 }
 
-# Battery nominal Ah capacity by size (used to calculate State of Health)
-# These are the approximate maximum usable capacities for each battery size.
+# New-pack Ah capacity references by battery size (used to calculate SOH)
 BATTERY_NOMINAL_AH: dict[int, float] = {
-    24: 60.6,
+    24: 66.0,
     30: 79.48,
-    40: 105.6,
-    62: 167.6,
+    40: 115.0,
+    62: 176.0,
 }
 
 # Default nominal Ah if user doesn't specify (30 kWh is most common)
