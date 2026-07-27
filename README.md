@@ -1,20 +1,24 @@
 # Nissan Leaf OBD BLE — Home Assistant Custom Integration
 
 A Home Assistant custom integration for monitoring Nissan Leaf battery and
-vehicle data via a Bluetooth Low Energy ELM327 OBD-II adapter (e.g. LeLink2).
+vehicle data through Bluetooth Low Energy ELM327 OBD-II adapters, including
+LeLink2 and Vgate iCar Pro devices.
 
-This integration is a fork of
+This repository is a fork of
+[hucknz/ha_nissan_leaf_obd_ble](https://github.com/hucknz/ha_nissan_leaf_obd_ble),
+which builds on the original
 [pbutterworth/nissan-leaf-obd-ble](https://github.com/pbutterworth/nissan-leaf-obd-ble)
-with the following additions:
+integration. It includes the following functionality:
 
-| Feature | Original | This fork |
-|---|---|---|
-| OBD adapter selection | Manual MAC entry | **Dropdown of discovered adapters** |
-| Generation support | Manual overrides.yaml | **Built-in per-generation profiles** |
-| ZE0/AZE0 odometer | Active query (unreliable) | **Passive CAN broadcast (0x5C5)** |
-| ZE0/AZE0 battery decoder | ZE1 offsets (incorrect) | **Correct ZE0 byte offsets** |
-| Sensor list | Fixed (all sensors always created) | **Trimmed to generation-supported set** |
-| Data persistence | Lost on HA restart | **Persisted to HA storage** |
+| Feature | Behavior |
+|---|---|
+| OBD adapter selection | Dropdown of discovered adapters |
+| Adapter name matching | Case-insensitive `OBDBLE` and `IOS-Vlink` prefix matching |
+| Generation support | Built-in ZE0, AZE0, ZE1, and automatic profiles |
+| ZE0/AZE0 odometer | Passive CAN broadcast (`0x5C5`) |
+| ZE0/AZE0 battery decoder | Generation-specific byte offsets |
+| Sensor list | Trimmed to the selected generation's supported sensors |
+| Data persistence | Last-known values persisted to Home Assistant storage |
 
 ---
 
@@ -22,9 +26,13 @@ with the following additions:
 
 | Item | Notes |
 |---|---|
-| LeLink2 ELM327 BLE OBD-II adapter | Primary tested hardware |
-| ELM327 BLE OBD-II adapters advertising as `OBDBLE` or `IOS-Vlink` | Names are matched case-insensitively; UUIDs configurable |
+| LeLink2 ELM327 BLE OBD-II adapter | Discovered by the `OBDBLE` advertised-name prefix |
+| Vgate iCar Pro BLE OBD-II adapter | Discovered by the `IOS-Vlink` advertised-name prefix |
+| Other compatible ELM327 BLE adapters | May be discovered by the default BLE service UUID; GATT UUIDs are configurable |
 | ESPHome Bluetooth Proxy (e.g. GL-iNet GL-S10) | Recommended for garage setups |
+
+Advertised-name prefixes are matched case-insensitively, so variants such as
+`obdble`, `ObdBle-1234`, `ios-vlink`, and `IOS-VLINK-1234` are supported.
 
 ## Supported vehicles
 
@@ -37,27 +45,13 @@ with the following additions:
 
 ---
 
-## Prerequisites
+## Requirements
 
-### Python library
+- Home Assistant with a local Bluetooth adapter or ESPHome Bluetooth proxy.
+- A compatible BLE ELM327 OBD-II adapter visible to Home Assistant.
 
-This integration depends on a **forked version** of the upstream Python
-library that adds generation profiles and passive CAN monitoring:
-
-```
-https://github.com/hucknz/py-nissan-leaf-obd-ble
-```
-
-Home Assistant will attempt to install it automatically from the git URL in
-`manifest.json`.  If auto-install fails (some HA setups restrict this), install
-it manually in the HA Python environment:
-
-```bash
-# SSH into your HA host
-pip install "git+https://github.com/hucknz/py-nissan-leaf-obd-ble@main"
-```
-
-Then restart Home Assistant.
+The required Nissan Leaf OBD BLE library is bundled with this integration; no
+separate Python package installation is required.
 
 ---
 
@@ -66,7 +60,7 @@ Then restart Home Assistant.
 ### Option 1 — HACS (Custom Repository)
 
 1. Open HACS → Integrations → ⋮ → Custom repositories.
-2. Add `https://github.com/hucknz/ha_nissan_leaf_obd_ble` with category **Integration**.
+2. Add `https://github.com/Jopand/ha_nissan_leaf_obd_ble` with category **Integration**.
 3. Find *Nissan Leaf OBD BLE* and click **Download**.
 4. Restart Home Assistant.
 
@@ -85,7 +79,8 @@ Then restart Home Assistant.
 2. In Home Assistant: **Settings → Devices & Services → Add Integration →
    Nissan Leaf OBD BLE**.
 3. **Step 1 — OBD adapter**: Select your adapter from the dropdown.  If it
-   doesn't appear, check that it's powered and within BLE range.
+   doesn't appear, check that it advertises an `OBDBLE` or `IOS-Vlink` name,
+   is powered, and is within BLE range.
 4. **Step 2 — Leaf generation**: Select your Leaf platform.
 
    | Label | Choose if… |
@@ -95,10 +90,13 @@ Then restart Home Assistant.
    | ZE1 — 2018+ | Your Leaf is the second-generation (40 kWh / 62 kWh) |
    | Auto | You're unsure — all sensors enabled, ZE1 decoders used |
 
-5. **Step 3 — BLE UUIDs**: Leave at defaults unless your adapter uses
-   non-standard GATT UUIDs.
+5. **Step 3 — Battery size**: Select your Leaf's battery capacity for accurate
+   State of Health calculations.
 6. Click **Submit**.  HA will create the device and all generation-appropriate
    sensor entities.
+
+If your adapter uses non-standard GATT UUIDs, configure them afterward using
+the integration's **Configure** button.
 
 ---
 
@@ -155,7 +153,8 @@ The battery decoder byte offsets for ZE0/AZE0 (`state_of_charge`,
 `hv_battery_health`, `hv_battery_Ah`) are based on community research and
 testing on a 2016 Nissan Leaf.  They have not been exhaustively verified across
 all ZE0 and AZE0 vehicles.  If you notice incorrect battery figures, please
-open an issue with your raw LBC data.
+[open an issue](https://github.com/Jopand/ha_nissan_leaf_obd_ble/issues) with
+your raw LBC data.
 
 ---
 
@@ -165,6 +164,7 @@ After setup, click **Configure** on the integration card to adjust:
 
 | Option | Default | Description |
 |---|---|---|
+| Battery size | 30 kWh / 79.48 Ah | Nominal capacity used to calculate State of Health |
 | Fast poll interval | 10 s | Polling rate when the car is on and in range |
 | Slow poll interval | 300 s | Polling rate when in range but car is off |
 | Extra-slow poll interval | 3600 s | Polling rate when out of BLE range |
@@ -188,6 +188,8 @@ last known values — no need to drive the car home first.
 : Ensure the OBD adapter is plugged in, the ignition is on, and the adapter
 is within Bluetooth range of your HA host or a Bluetooth proxy.  Check
 *Settings → Devices & Services → Bluetooth* to verify HA can see the adapter.
+Manual discovery recognizes the `OBDBLE` and `IOS-Vlink` name prefixes without
+regard to letter case.
 
 **Sensors stay at last known value indefinitely**
 : This is the persistence feature working as designed.  Values update the
@@ -210,6 +212,7 @@ logger:
 
 ## Credits
 
+- [hucknz/ha_nissan_leaf_obd_ble](https://github.com/hucknz/ha_nissan_leaf_obd_ble) — parent integration fork
 - [pbutterworth/nissan-leaf-obd-ble](https://github.com/pbutterworth/nissan-leaf-obd-ble) — original integration
 - [pbutterworth/py-nissan-leaf-obd-ble](https://github.com/pbutterworth/py-nissan-leaf-obd-ble) — upstream Python library
 - [hucknz/py-nissan-leaf-obd-ble](https://github.com/hucknz/py-nissan-leaf-obd-ble) — forked library with ZE0 support and generation profiles

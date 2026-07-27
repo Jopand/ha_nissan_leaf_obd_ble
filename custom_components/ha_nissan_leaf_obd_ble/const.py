@@ -4,7 +4,7 @@ NAME = "Nissan Leaf OBD BLE"
 DOMAIN = "ha_nissan_leaf_obd_ble"
 VERSION = "1.0.1"
 
-ISSUE_URL = "https://github.com/hucknz/ha_nissan_leaf_obd_ble/issues"
+ISSUE_URL = "https://github.com/Jopand/ha_nissan_leaf_obd_ble/issues"
 
 # Configuration keys — stored in config entry DATA (require re-adding to change)
 CONF_GENERATION = "generation"

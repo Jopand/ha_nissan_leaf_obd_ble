@@ -2,11 +2,11 @@
   "domain": "ha_nissan_leaf_obd_ble",
   "name": "Nissan Leaf OBD BLE",
   "version": "1.0.1",
-  "codeowners": ["@hucknz"],
+  "codeowners": ["@Jopand"],
   "config_flow": true,
   "dependencies": ["bluetooth_adapters"],
-  "documentation": "https://github.com/hucknz/ha_nissan_leaf_obd_ble",
-  "issue_tracker": "https://github.com/hucknz/ha_nissan_leaf_obd_ble/issues",
+  "documentation": "https://github.com/Jopand/ha_nissan_leaf_obd_ble",
+  "issue_tracker": "https://github.com/Jopand/ha_nissan_leaf_obd_ble/issues",
   "iot_class": "local_polling",
   "requirements": [
     "bleak-retry-connector>=3.0.0"
