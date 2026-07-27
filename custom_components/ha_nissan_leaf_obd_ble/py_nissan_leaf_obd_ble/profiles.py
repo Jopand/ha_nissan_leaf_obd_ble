@@ -33,17 +33,17 @@ logger = logging.getLogger(__name__)
 
 
 # ZE1 (2018+) - Optimized profile for newest generation
-# Uses KWP2000 multi-step session for odometer on header 0x743
+# Uses ReadDataByIdentifier for the odometer on header 0x743
 # Has full suite of modern ECU diagnostics
 PROFILE_ZE1 = {
     "name": "ZE1 (2018+)",
     "description": "2018 and later Nissan Leaf (ZE1 platform, optimized profile)",
-    "disabled_commands": {"odometer_can"},  # Use active KWP2000 instead
+    "disabled_commands": {"odometer_can"},  # Use active diagnostics instead
     "extra_commands": {},
 }
 
 # ZE0/AZE0 (2010-2018) - Optimized profiles for original and refreshed generations
-# Uses passive CAN broadcast 0x5C5 for odometer instead of KWP2000
+# Uses passive CAN broadcast 0x5C5 instead of active diagnostics
 # May have different or missing PIDs on some ECUs
 PROFILE_ZE0 = {
     "name": "ZE0 (2010-2017)",

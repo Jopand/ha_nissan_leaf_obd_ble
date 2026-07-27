@@ -7,13 +7,13 @@ platform can configure themselves correctly for the selected generation without
 requiring the user to write manual overrides.
 
 ZE0 / AZE0 (2010–2018):
-  - Odometer via passive CAN broadcast (frame 0x5C5) — active KWP2000 query
+  - Odometer via passive CAN broadcast (frame 0x5C5) — active diagnostic query
     is disabled because it is unreliable on these ECUs.
   - LBC response byte offsets differ from the ZE1 platform.
   - e-Pedal mode did not exist on these generations.
 
 ZE1 (2018+):
-  - Odometer via active KWP2000 diagnostic session.
+  - Odometer via active ReadDataByIdentifier query.
   - LBC uses the library's default decoder (ZE1 offsets).
   - e-Pedal mode is available.
 
@@ -39,6 +39,7 @@ from .const import (
     GENERATION_ZE0,
     GENERATION_ZE1,
 )
+from .metrics import calculate_soh
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ def _make_lbc_decoder_ze0(nominal_ah: float):
             raw2 |= -0x100000000
 
         current_ah = int.from_bytes(d[34:38], byteorder="big") / 10000
-        soh = (current_ah / nominal_ah) * 100 if nominal_ah > 0 else None
+        soh = calculate_soh(current_ah, nominal_ah)
 
         return {
             "state_of_charge": int.from_bytes(d[30:34], byteorder="big") / 10000,
@@ -134,7 +135,7 @@ def _make_soh_decoder_ze0(nominal_ah: float):
         if not d:
             return None
         current_ah = int.from_bytes(d[34:38], byteorder="big") / 10000
-        soh = (current_ah / nominal_ah) * 100 if nominal_ah > 0 else None
+        soh = calculate_soh(current_ah, nominal_ah)
         return {"state_of_health": soh}
     return decoder
 
@@ -162,7 +163,7 @@ def _make_lbc_decoder_ze1(nominal_ah: float):
             raw2 |= -0x100000000
 
         current_ah = int.from_bytes(d[37:40], byteorder="big") / 10000
-        soh = (current_ah / nominal_ah) * 100 if nominal_ah > 0 else None
+        soh = calculate_soh(current_ah, nominal_ah)
 
         return {
             "state_of_charge": int.from_bytes(d[33:36], byteorder="big") / 10000,
@@ -225,7 +226,7 @@ def _make_soh_decoder_ze1(nominal_ah: float):
         if not d:
             return None
         current_ah = int.from_bytes(d[37:40], byteorder="big") / 10000
-        soh = (current_ah / nominal_ah) * 100 if nominal_ah > 0 else None
+        soh = calculate_soh(current_ah, nominal_ah)
         return {"state_of_health": soh}
     return decoder
 
@@ -447,7 +448,7 @@ _ALL_SENSORS: dict[str, SensorEntityDescription] = {
     "state_of_health": SensorEntityDescription(
         key="state_of_health",
         icon="mdi:battery-heart",
-        name="State of health",
+        name="Calculated state of health",
         native_unit_of_measurement="%",
         suggested_display_precision=1,
         device_class=SensorDeviceClass.BATTERY,

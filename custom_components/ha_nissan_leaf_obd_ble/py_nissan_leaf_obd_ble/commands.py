@@ -32,6 +32,7 @@
 
 import logging
 
+from ..metrics import ZE1_ODOMETER_COMMAND, ZE1_ODOMETER_EXPECTED_BYTES
 from .decoders import (
     ac_on,
     ac_power,
@@ -99,7 +100,7 @@ leaf_commands = {
     "rear_heater":           OBDCommand("rear_heater",           "Rear heater status",                  b"0322110f",    4,  rear_heater,            header=b"797",),
     "eco_mode":              OBDCommand("eco_mode",              "ECO mode status",                     b"03221318",    5,  eco_mode,               header=b"797",),
     "e_pedal_mode":          OBDCommand("e_pedal_mode",          "e-Pedal mode status",                 b"0322131A",    5,  e_pedal_mode,           header=b"797",),
-    "odometer":              OBDCommand("odometer",              "Total odometer reading (km)",         b"022101", 128,  odometer, header=b"743", kwp2000=True,),
+    "odometer":              OBDCommand("odometer",              "Total odometer reading (km)",         ZE1_ODOMETER_COMMAND, ZE1_ODOMETER_EXPECTED_BYTES, odometer, header=b"743",),
     "tp_fr":                 OBDCommand("tp_fr",                 "Tyre pressure front right",           b"03220e25",    4,  tp_fr,                  header=b"743",),
     "tp_fl":                 OBDCommand("tp_fl",                 "Tyre pressure front left",            b"03220e26",    4,  tp_fl,                  header=b"743",),
     "tp_rr":                 OBDCommand("tp_rr",                 "Tyre pressure rear right",            b"03220e27",    4,  tp_rr,                  header=b"743",),

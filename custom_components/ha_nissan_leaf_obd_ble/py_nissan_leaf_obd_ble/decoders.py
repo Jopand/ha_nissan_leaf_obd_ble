@@ -33,6 +33,7 @@
 import logging
 import struct
 
+from ..metrics import decode_ze1_odometer
 from .codes import OBD_COMPLIANCE
 
 logger = logging.getLogger(__name__)
@@ -259,50 +260,13 @@ def e_pedal_mode(messages):
 
 
 def odometer(messages):
-    """Decode Total odometer reading (km) from KWP2000 diagnostic session.
-    
-    Response from CAR-CAN ECU at 0x743 via ReadDataByLocalIdentifier (service 0x21).
-    ISO 15765-4 first frame format: [0x6N] [length] [padding] [odometer...]
-    Odometer is a 4-byte big-endian unsigned integer.
-    Example: 61 01 00 00 00 00 00 00 00 01 57 2c where bytes[8:12] = 0x0001572c = 87,852 km.
-    
-    Verified on 2016 Nissan Leaf (active polling, on-demand read).
-    """
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    # For multi-frame ISO 15765-4 responses
+    """Decode the ZE1 odometer from a validated PID 0x0E01 response."""
     d = messages[0].data if messages else bytes()
-    
-    logger.debug(f"odometer: Full data ({len(d)} bytes): {d.hex() if d else '(empty)'}")
-    
-    if len(d) < 4:
-        logger.warning(f"odometer: Insufficient data ({len(d)} bytes)")
-        return {"odometer": 0}
-    
-    # Detect frame type and extract odometer from correct position
-    if len(d) >= 12 and d[0] == 0x61:
-        # ISO 15765-4 first frame (0x61 = frame type)
-        # Structure: [0x61] [length_byte] [padding...] [odometer @ byte 8]
-        logger.debug(f"odometer: ISO 15765-4 first frame detected")
-        if len(d) >= 12:
-            v = int.from_bytes(d[8:12], byteorder="big", signed=False)
-            logger.debug(f"odometer: Reading from [8:12] = {d[8:12].hex()} = {v} km")
-            return {"odometer": v}
-    
-    # Standard KWP2000 response: [0x60=service] [odometer...]
-    if len(d) >= 5 and d[0] == 0x60:
-        v = int.from_bytes(d[1:5], byteorder="big", signed=False)
-        logger.debug(f"odometer: KWP2000 format [1:5] = {d[1:5].hex()} = {v} km")
-        return {"odometer": v}
-    
-    # Fallback: try reading 4 bytes from start
-    if len(d) >= 4:
-        v = int.from_bytes(d[0:4], byteorder="big", signed=False)
-        logger.debug(f"odometer: Fallback format [0:4] = {d[0:4].hex()} = {v} km")
-        return {"odometer": v}
-    
-    return {"odometer": 0}
+    value = decode_ze1_odometer(d)
+    if value is None:
+        logger.warning("Ignoring invalid odometer response: %s", d.hex() or "empty")
+        return None
+    return {"odometer": value}
 
 
 def tp_fr(messages):

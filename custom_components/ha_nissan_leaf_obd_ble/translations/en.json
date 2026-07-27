@@ -10,14 +10,14 @@
       },
       "generation": {
         "title": "Select Leaf Generation",
-        "description": "Select your Nissan Leaf generation. This determines which sensors are created and how data is decoded.\n\n- **ZE0 / AZE0 (2010–2018)** — uses passive CAN bus broadcast for odometer; ZE0-specific battery decoder.\n- **ZE1 (2018+)** — uses active KWP2000 query for odometer; includes e-Pedal sensor.\n- **Auto** — enables all sensors; uses ZE1 decoders as default.  ZE0/AZE0 owners should select their generation for correct battery data.",
+        "description": "Select your Nissan Leaf generation. This determines which sensors are created and how data is decoded.\n\n- **ZE0 / AZE0 (2010–2018)** — uses passive CAN bus broadcast for odometer; ZE0-specific battery decoder.\n- **ZE1 (2018+)** — uses an active diagnostic query for odometer; includes e-Pedal sensor.\n- **Auto** — enables all sensors; uses ZE1 decoders as default.  ZE0/AZE0 owners should select their generation for correct battery data.",
         "data": {
           "generation": "Leaf generation"
         }
       },
       "battery_size": {
         "title": "Select Battery Size",
-        "description": "Select your battery capacity so the integration can accurately calculate State of Health (SOH).",
+        "description": "Select your battery size so the integration can calculate State of Health (SOH) from the BMS capacity and the matching new-pack capacity reference.",
         "data": {
           "nominal_ah": "Battery size"
         }
@@ -49,6 +49,7 @@
         "title": "Nissan Leaf OBD BLE — Settings",
         "description": "Adjust polling intervals and BLE connection settings.",
         "data": {
+          "nominal_ah": "Battery size",
           "fast_poll": "Fast polling interval (s)",
           "slow_poll": "Slow polling interval (s)",
           "xs_poll": "Extra-slow polling interval (s)",
@@ -57,6 +58,7 @@
           "characteristic_uuid_write": "BLE write characteristic UUID"
         },
         "data_description": {
+          "nominal_ah": "The new-pack capacity reference in Ah used to calculate State of Health (SOH).",
           "fast_poll": "How often to poll when the car is on and in range.",
           "slow_poll": "How often to poll when the car is in range but turned off.",
           "xs_poll": "How often to poll when the adapter is out of BLE range.  HA will also trigger an immediate poll when the adapter is re-detected.",
