@@ -23,7 +23,7 @@ with the following additions:
 | Item | Notes |
 |---|---|
 | LeLink2 ELM327 BLE OBD-II adapter | Primary tested hardware |
-| Any ELM327 BLE OBD-II adapter advertising as `OBDBLE` | Should work; UUIDs configurable |
+| ELM327 BLE OBD-II adapters advertising as `OBDBLE` or `IOS-Vlink` | Names are matched case-insensitively; UUIDs configurable |
 | ESPHome Bluetooth Proxy (e.g. GL-iNet GL-S10) | Recommended for garage setups |
 
 ## Supported vehicles
