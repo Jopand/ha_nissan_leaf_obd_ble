@@ -2,9 +2,9 @@
 
 Setup wizard steps
 ------------------
-1. bluetooth  — triggered automatically when HA discovers an OBDBLE adapter.
+1. bluetooth  — triggered automatically when HA discovers a compatible adapter.
 2. user        — manual "Add Integration" entry point; shows a dropdown of all
-                 discovered OBDBLE adapters.  If none are found the user is
+                 discovered supported adapters.  If none are found the user is
                  asked to bring the adapter into BLE range first.
 3. generation  — choose the Leaf platform (ZE0 / AZE0 / ZE1 / Auto).
 4. configure   — (optional) override the BLE service / characteristic UUIDs
@@ -91,7 +91,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_bluetooth(
         self, discovery_info: BluetoothServiceInfoBleak
     ) -> FlowResult:
-        """Handle automatic Bluetooth discovery of an OBDBLE adapter."""
+        """Handle automatic Bluetooth discovery of a compatible adapter."""
         await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
 
@@ -108,7 +108,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Display a dropdown of all discovered OBDBLE adapters."""
+        """Display a dropdown of all discovered supported adapters."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -137,7 +137,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 or info.address in self._discovered_devices
             ):
                 continue
-            if any(info.name.startswith(n) for n in BLE_LOCAL_NAMES):
+            device_name = (info.name or "").casefold()
+            if any(
+                device_name.startswith(name.casefold())
+                for name in BLE_LOCAL_NAMES
+            ):
                 self._discovered_devices[info.address] = info
 
         if not self._discovered_devices:

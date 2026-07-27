@@ -39,7 +39,7 @@
     },
     "abort": {
       "already_configured": "This OBD adapter is already configured.",
-      "no_unconfigured_devices": "No OBDBLE adapters were found.  Plug in the adapter, turn on the ignition, and ensure the adapter is within Bluetooth range, then try again.",
+      "no_unconfigured_devices": "No supported OBD BLE adapters were found.  Plug in the adapter, turn on the ignition, and ensure the adapter is within Bluetooth range, then try again.",
       "device_not_found": "The selected adapter could not be located."
     }
   },
