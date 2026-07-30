@@ -1,4 +1,4 @@
-"""Regression tests for odometer and battery calculations."""
+"""Regression tests for ZE1 metrics and battery calculations."""
 
 from __future__ import annotations
 
@@ -30,6 +30,12 @@ class MetricsTest(unittest.TestCase):
             87852,
         )
 
+    def test_reported_ze1_odometer_capture(self):
+        self.assertEqual(
+            metrics.decode_ze1_odometer(bytes.fromhex("620e01018087")),
+            98439,
+        )
+
     def test_negative_response_is_not_an_odometer(self):
         self.assertIsNone(
             metrics.decode_ze1_odometer(bytes.fromhex("7f1012000000"))
@@ -39,6 +45,47 @@ class MetricsTest(unittest.TestCase):
         self.assertIsNone(metrics.decode_ze1_odometer(b""))
         self.assertIsNone(
             metrics.decode_ze1_odometer(bytes.fromhex("620e0101"))
+        )
+
+    def test_reported_display_soc_capture(self):
+        self.assertEqual(
+            metrics.decode_ze1_display_soc(bytes.fromhex("621204000012f8")),
+            48.56,
+        )
+
+    def test_display_soc_boundaries(self):
+        self.assertEqual(
+            metrics.decode_ze1_display_soc(bytes.fromhex("62120400000000")),
+            0,
+        )
+        self.assertEqual(
+            metrics.decode_ze1_display_soc(bytes.fromhex("62120400002710")),
+            100,
+        )
+
+    def test_invalid_display_soc_responses_are_rejected(self):
+        self.assertIsNone(metrics.decode_ze1_display_soc(b""))
+        self.assertIsNone(
+            metrics.decode_ze1_display_soc(bytes.fromhex("621204000012"))
+        )
+        self.assertIsNone(
+            metrics.decode_ze1_display_soc(bytes.fromhex("621205000012f8"))
+        )
+        self.assertIsNone(
+            metrics.decode_ze1_display_soc(bytes.fromhex("62120400002711"))
+        )
+
+    def test_reported_range_capture_is_only_validated(self):
+        self.assertTrue(
+            metrics.is_valid_ze1_range_response(
+                bytes.fromhex("620e2400284208800208000000")
+            )
+        )
+        self.assertFalse(metrics.is_valid_ze1_range_response(b""))
+        self.assertFalse(
+            metrics.is_valid_ze1_range_response(
+                bytes.fromhex("620e2500284208800208000000")
+            )
         )
         self.assertIsNone(
             metrics.decode_ze1_odometer(bytes.fromhex("620e01000000"))
@@ -55,11 +102,13 @@ class MetricsTest(unittest.TestCase):
             "odometer": 2131759616,
             "hv_battery_Ah": 100.8,
             "state_of_health": 95.5,
+            "range_remaining": 4.0,
         }
 
         self.assertTrue(metrics.normalize_metrics(data, 115.0))
         self.assertNotIn("odometer", data)
         self.assertAlmostEqual(data["state_of_health"], 87.7, places=1)
+        self.assertIsNone(data["range_remaining"])
 
     def test_invalid_fresh_capacity_is_ignored(self):
         data = {"hv_battery_Ah": 0, "state_of_health": 95.5}

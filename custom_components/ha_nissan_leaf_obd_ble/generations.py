@@ -439,7 +439,16 @@ _ALL_SENSORS: dict[str, SensorEntityDescription] = {
     "state_of_charge": SensorEntityDescription(
         key="state_of_charge",
         icon="mdi:battery-charging",
-        name="State of charge",
+        name="BMS state of charge",
+        native_unit_of_measurement="%",
+        suggested_display_precision=1,
+        device_class=SensorDeviceClass.BATTERY,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    "display_state_of_charge": SensorEntityDescription(
+        key="display_state_of_charge",
+        icon="mdi:car-dashboard",
+        name="Display state of charge",
         native_unit_of_measurement="%",
         suggested_display_precision=1,
         device_class=SensorDeviceClass.BATTERY,
@@ -506,7 +515,7 @@ _ALL_SENSORS: dict[str, SensorEntityDescription] = {
 }
 
 # Sensors not present on ZE0 / AZE0 platforms
-_ZE0_EXCLUDED = {"e_pedal_mode"}
+_ZE0_EXCLUDED = {"e_pedal_mode", "display_state_of_charge"}
 
 # Sensors not present on ZE1 / Auto platforms
 _ZE1_EXCLUDED = {"ambient_temp"}

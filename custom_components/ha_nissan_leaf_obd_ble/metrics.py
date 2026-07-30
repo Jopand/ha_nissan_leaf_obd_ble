@@ -9,6 +9,9 @@ MAX_ODOMETER_KM = 0xFFFFFF
 ZE1_ODOMETER_COMMAND = b"03220e01"
 ZE1_ODOMETER_EXPECTED_BYTES = 0
 ZE1_ODOMETER_RESPONSE_PREFIX = b"\x62\x0e\x01"
+ZE1_DISPLAY_SOC_RESPONSE_PREFIX = b"\x62\x12\x04"
+ZE1_RANGE_RESPONSE_PREFIX = b"\x62\x0e\x24"
+ZE1_RANGE_RESPONSE_LENGTH = 13
 
 LEGACY_NOMINAL_AH = {
     60.6: 66.0,
@@ -24,6 +27,23 @@ def decode_ze1_odometer(data: bytes) -> Optional[int]:
 
     value = int.from_bytes(data[3:6], byteorder="big", signed=False)
     return value if is_valid_odometer(value) else None
+
+
+def decode_ze1_display_soc(data: bytes) -> Optional[float]:
+    """Decode dashboard SOC from a validated VCM DID 0x1204 response."""
+    if len(data) < 7 or data[:3] != ZE1_DISPLAY_SOC_RESPONSE_PREFIX:
+        return None
+
+    value = int.from_bytes(data[5:7], byteorder="big", signed=False) / 100
+    return value if 0 <= value <= 100 else None
+
+
+def is_valid_ze1_range_response(data: bytes) -> bool:
+    """Validate the known ZE1 range response envelope without decoding it."""
+    return (
+        len(data) == ZE1_RANGE_RESPONSE_LENGTH
+        and data[:3] == ZE1_RANGE_RESPONSE_PREFIX
+    )
 
 
 def is_valid_odometer(value: object) -> bool:
@@ -62,6 +82,11 @@ def normalize_metrics(data: dict, nominal_ah: object) -> bool:
 
     if "odometer" in data and not is_valid_odometer(data["odometer"]):
         data.pop("odometer")
+        changed = True
+
+    # DID 0x0E24 is not decoded yet; discard values produced by the old formula.
+    if data.get("range_remaining") is not None:
+        data["range_remaining"] = None
         changed = True
 
     capacity_ah = data.get("hv_battery_Ah")

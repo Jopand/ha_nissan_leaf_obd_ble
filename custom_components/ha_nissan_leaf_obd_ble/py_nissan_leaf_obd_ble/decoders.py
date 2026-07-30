@@ -33,7 +33,11 @@
 import logging
 import struct
 
-from ..metrics import decode_ze1_odometer
+from ..metrics import (
+    decode_ze1_display_soc,
+    decode_ze1_odometer,
+    is_valid_ze1_range_response,
+)
 from .codes import OBD_COMPLIANCE
 
 logger = logging.getLogger(__name__)
@@ -269,6 +273,18 @@ def odometer(messages):
     return {"odometer": value}
 
 
+def display_state_of_charge(messages):
+    """Decode ZE1 dashboard SOC from VCM DID 0x1204."""
+    d = messages[0].data if messages else bytes()
+    value = decode_ze1_display_soc(d)
+    if value is None:
+        logger.warning(
+            "Ignoring invalid display SOC response: %s", d.hex() or "empty"
+        )
+        return None
+    return {"display_state_of_charge": value}
+
+
 def tp_fr(messages):
     """Decode Tyre pressure front right (kPa) messages."""
     d = messages[0].data  # only operate on a single message
@@ -298,11 +314,13 @@ def tp_rl(messages):
 
 
 def range_remaining(messages):
-    """Decode Remaining range (km) messages."""
-    # todo: fix this decoder
-    d = messages[0].data  # only operate on a single message
-    v = struct.unpack("!h", d[3:5])[0] / 10
-    return {"range_remaining": v}
+    """Capture ZE1 meter DID 0x0E24; its decoder is not yet verified."""
+    d = messages[0].data if messages else bytes()
+    if not is_valid_ze1_range_response(d):
+        logger.warning("Ignoring invalid range response: %s", d.hex() or "empty")
+    else:
+        logger.debug("Raw ZE1 range response 0x0E24: %s", d.hex())
+    return {"range_remaining": None}
 
 
 def lbc(messages):

@@ -14,6 +14,7 @@ integration. It includes the following functionality:
 |---|---|
 | OBD adapter selection | Dropdown of discovered adapters |
 | Adapter name matching | Case-insensitive `OBDBLE` and `IOS-Vlink` prefix matching |
+| Adapter profiles | Automatic LeLink2 and Vgate iCar Pro GATT UUID selection |
 | Generation support | Built-in ZE0, AZE0, ZE1, and automatic profiles |
 | ZE0/AZE0 odometer | Passive CAN broadcast (`0x5C5`) |
 | ZE0/AZE0 battery decoder | Generation-specific byte offsets |
@@ -27,12 +28,17 @@ integration. It includes the following functionality:
 | Item | Notes |
 |---|---|
 | LeLink2 ELM327 BLE OBD-II adapter | Discovered by the `OBDBLE` advertised-name prefix |
-| Vgate iCar Pro BLE OBD-II adapter | Discovered by the `IOS-Vlink` advertised-name prefix |
+| Vgate iCar Pro BLE OBD-II adapter | Discovered by the `IOS-Vlink` name or Vgate service UUID; correct GATT defaults are selected automatically |
 | Other compatible ELM327 BLE adapters | May be discovered by the default BLE service UUID; GATT UUIDs are configurable |
 | ESPHome Bluetooth Proxy (e.g. GL-iNet GL-S10) | Recommended for garage setups |
 
 Advertised-name prefixes are matched case-insensitively, so variants such as
 `obdble`, `ObdBle-1234`, `ios-vlink`, and `IOS-VLINK-1234` are supported.
+
+The tested Vgate iCar Pro profile uses service UUID
+`e7810a71-73ae-499d-8c15-faa9aef0c3f2` and read/write characteristic UUID
+`bef8d6c9-9c21-4c9e-b632-bd58c1009f9f`. New adapters receive the matching
+profile during setup; existing manual UUID overrides are retained.
 
 ## Supported vehicles
 
@@ -95,8 +101,9 @@ separate Python package installation is required.
 6. Click **Submit**.  HA will create the device and all generation-appropriate
    sensor entities.
 
-If your adapter uses non-standard GATT UUIDs, configure them afterward using
-the integration's **Configure** button.
+Recognized LeLink2 and Vgate adapters receive their matching GATT UUIDs
+automatically. For other adapters, configure custom UUIDs afterward using the
+integration's **Configure** button.
 
 ---
 
@@ -106,7 +113,7 @@ the integration's **Configure** button.
 
 | Entity | Unit | Description |
 |---|---|---|
-| `sensor.nissan_leaf_state_of_charge` | % | Battery charge level |
+| `sensor.nissan_leaf_state_of_charge` | % | Raw BMS state of charge; this may differ from the dashboard |
 | `sensor.nissan_leaf_state_of_health` | % | Calculated SOH based on present Ah and the selected new-pack capacity |
 | `sensor.nissan_leaf_hv_battery_health` | % | Nissan battery Health Index (Hx), which is separate from SOH |
 | `sensor.nissan_leaf_hv_battery_capacity` | Ah | Battery capacity |
@@ -114,7 +121,7 @@ the integration's **Configure** button.
 | `sensor.nissan_leaf_hv_battery_current_1` | A | Pack current (channel 1) |
 | `sensor.nissan_leaf_hv_battery_current_2` | A | Pack current (channel 2) |
 | `sensor.nissan_leaf_odometer` | km | Total distance travelled |
-| `sensor.nissan_leaf_range_remaining` | km | Estimated remaining range |
+| `sensor.nissan_leaf_range_remaining` | km | Currently unknown; DID `0x0E24` is captured but its encoding is not verified |
 | `sensor.nissan_leaf_speed` | km/h | Vehicle speed |
 | `sensor.nissan_leaf_motor_power` | W | Traction motor power |
 | `sensor.nissan_leaf_gear_position` | — | Park / Reverse / Neutral / Drive / Eco |
@@ -145,6 +152,14 @@ the integration's **Configure** button.
 | Entity | Description |
 |---|---|
 | `sensor.nissan_leaf_e_pedal_mode` | e-Pedal mode active |
+| `sensor.nissan_leaf_display_state_of_charge` | Dashboard state of charge from VCM DID `0x1204` |
+
+The ZE1 display SOC is independent of the raw BMS SOC. It is decoded directly
+from header `0x797`, DID `0x1204`; no linear conversion is applied.
+
+The range query uses header `0x743`, DID `0x0E24`. Its response format is not
+yet understood, so the integration intentionally publishes `unknown` instead
+of the previously incorrect values such as 0 or 4 km.
 
 ---
 
@@ -169,14 +184,23 @@ After setup, click **Configure** on the integration card to adjust:
 | Fast poll interval | 10 s | Polling rate when the car is on and in range |
 | Slow poll interval | 300 s | Polling rate when in range but car is off |
 | Extra-slow poll interval | 3600 s | Polling rate when out of BLE range |
-| BLE service UUID | `0000ffe0-…` | GATT service UUID for the adapter |
-| BLE read characteristic UUID | `0000ffe1-…` | Read characteristic UUID |
-| BLE write characteristic UUID | `0000ffe1-…` | Write characteristic UUID |
+| BLE service UUID | Adapter profile | GATT service UUID for the adapter |
+| BLE read characteristic UUID | Adapter profile | Read/notify characteristic UUID |
+| BLE write characteristic UUID | Adapter profile | Write characteristic UUID |
 
 Calculated SOH is the current BMS capacity divided by the selected new-pack
 capacity reference. The references are 66 Ah (24 kWh), 79.48 Ah (30 kWh),
-115 Ah (40 kWh), and 176 Ah (62 kWh). Hx is reported separately and is not
-expected to equal SOH.
+115 Ah (40 kWh), and 176 Ah (62 kWh). The 115 Ah value is an empirical
+calculation reference, not an official Nissan specification. Hx is reported
+separately and is not expected to equal SOH.
+
+### Confirmed ZE1 diagnostics
+
+| Header | DID | Status |
+|---|---|---|
+| `0x797` | `0x1204` | Display SOC, verified |
+| `0x743` | `0x0E01` | Odometer, verified |
+| `0x743` | `0x0E24` | Range response available; decoding pending |
 
 ---
 

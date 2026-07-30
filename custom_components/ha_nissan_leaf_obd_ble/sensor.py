@@ -53,6 +53,14 @@ class NissanLeafSensor(NissanLeafObdBleEntity, SensorEntity):
         return self.coordinator.data.get(self.entity_description.key)
 
     @property
+    def unique_id(self) -> str:
+        """Preserve the existing SOC registry identity after its display rename."""
+        if self.entity_description.key == "state_of_charge":
+            address = self.config_entry.data[CONF_ADDRESS]
+            return f"{address}-{NAME} State of charge"
+        return super().unique_id
+
+    @property
     def icon(self) -> str | None:
         """Return the icon defined in the entity description."""
         return self.entity_description.icon

@@ -24,14 +24,14 @@
       },
       "configure": {
         "title": "BLE UUID Configuration",
-        "description": "Leave all values at their defaults unless your OBD adapter uses non-standard GATT UUIDs (most adapters do not).",
+        "description": "Recognized LeLink2 and Vgate iCar Pro adapters receive matching GATT UUIDs automatically. Change these values only for another adapter or a manual override.",
         "data": {
           "service_uuid": "BLE service UUID",
           "characteristic_uuid_read": "BLE read characteristic UUID",
           "characteristic_uuid_write": "BLE write characteristic UUID"
         },
         "data_description": {
-          "service_uuid": "GATT service UUID advertised by the OBD adapter (default matches LeLink2 / OBDBLE).",
+          "service_uuid": "GATT service UUID advertised by the OBD adapter.",
           "characteristic_uuid_read": "GATT characteristic UUID for receiving data from the adapter.",
           "characteristic_uuid_write": "GATT characteristic UUID for sending commands to the adapter."
         }
@@ -47,7 +47,7 @@
     "step": {
       "init": {
         "title": "Nissan Leaf OBD BLE — Settings",
-        "description": "Adjust polling intervals and BLE connection settings.",
+        "description": "Adjust polling intervals and BLE connection settings. Existing manual UUID overrides are preserved.",
         "data": {
           "nominal_ah": "Battery size",
           "fast_poll": "Fast polling interval (s)",

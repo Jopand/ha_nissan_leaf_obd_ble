@@ -41,22 +41,20 @@ from homeassistant.data_entry_flow import FlowResult
 
 from .const import (
     BATTERY_NOMINAL_AH,
-    BLE_LOCAL_NAMES,
     CONF_CHARACTERISTIC_UUID_READ,
     CONF_CHARACTERISTIC_UUID_WRITE,
     CONF_GENERATION,
     CONF_NOMINAL_AH,
     CONF_SERVICE_UUID,
-    DEFAULT_CHARACTERISTIC_UUID_READ,
-    DEFAULT_CHARACTERISTIC_UUID_WRITE,
     DEFAULT_FAST_POLL,
     DEFAULT_NOMINAL_AH,
-    DEFAULT_SERVICE_UUID,
     DEFAULT_SLOW_POLL,
     DEFAULT_XS_POLL,
     DOMAIN,
     GENERATION_AUTO,
     GENERATION_OPTIONS,
+    get_adapter_profile,
+    is_supported_adapter,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -137,11 +135,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 or info.address in self._discovered_devices
             ):
                 continue
-            device_name = (info.name or "").casefold()
-            if any(
-                device_name.startswith(name.casefold())
-                for name in BLE_LOCAL_NAMES
-            ):
+            if is_supported_adapter(info.name, info.service_uuids):
                 self._discovered_devices[info.address] = info
 
         if not self._discovered_devices:
@@ -231,6 +225,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         generation = self._selected_generation
         nominal_ah = self._selected_nominal_ah
         gen_label = GENERATION_OPTIONS.get(generation, generation)
+        adapter_profile = get_adapter_profile(
+            self._selected_device.name,
+            self._selected_device.service_uuids,
+        )
 
         return self.async_create_entry(
             title=f"Nissan Leaf {gen_label.split('—')[0].strip()} ({address})",
@@ -239,9 +237,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_GENERATION: generation,
             },
             options={
-                CONF_SERVICE_UUID: DEFAULT_SERVICE_UUID,
-                CONF_CHARACTERISTIC_UUID_READ: DEFAULT_CHARACTERISTIC_UUID_READ,
-                CONF_CHARACTERISTIC_UUID_WRITE: DEFAULT_CHARACTERISTIC_UUID_WRITE,
+                **adapter_profile,
                 CONF_NOMINAL_AH: nominal_ah,
                 "fast_poll": DEFAULT_FAST_POLL,
                 "slow_poll": DEFAULT_SLOW_POLL,
@@ -280,6 +276,7 @@ class NissanLeafOptionsFlowHandler(config_entries.OptionsFlow):
             str(ah): f"{size} kWh ({ah} Ah)"
             for size, ah in sorted(BATTERY_NOMINAL_AH.items())
         }
+        adapter_profile = get_adapter_profile(None)
 
         return self.async_show_form(
             step_id="init",
@@ -304,21 +301,21 @@ class NissanLeafOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_SERVICE_UUID,
                         default=self._options.get(
-                            CONF_SERVICE_UUID, DEFAULT_SERVICE_UUID
+                            CONF_SERVICE_UUID, adapter_profile[CONF_SERVICE_UUID]
                         ),
                     ): str,
                     vol.Optional(
                         CONF_CHARACTERISTIC_UUID_READ,
                         default=self._options.get(
                             CONF_CHARACTERISTIC_UUID_READ,
-                            DEFAULT_CHARACTERISTIC_UUID_READ,
+                            adapter_profile[CONF_CHARACTERISTIC_UUID_READ],
                         ),
                     ): str,
                     vol.Optional(
                         CONF_CHARACTERISTIC_UUID_WRITE,
                         default=self._options.get(
                             CONF_CHARACTERISTIC_UUID_WRITE,
-                            DEFAULT_CHARACTERISTIC_UUID_WRITE,
+                            adapter_profile[CONF_CHARACTERISTIC_UUID_WRITE],
                         ),
                     ): str,
                 }

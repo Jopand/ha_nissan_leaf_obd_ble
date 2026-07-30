@@ -48,14 +48,14 @@ PROFILE_ZE1 = {
 PROFILE_ZE0 = {
     "name": "ZE0 (2010-2017)",
     "description": "2010-2017 Nissan Leaf (ZE0 platform, optimized profile)",
-    "disabled_commands": {"odometer"},  # Use passive CAN broadcast instead
+    "disabled_commands": {"odometer", "display_state_of_charge"},
     "extra_commands": {},
 }
 
 PROFILE_AZE0 = {
     "name": "AZE0 (2017-2018)",
     "description": "2017-2018 Nissan Leaf (AZE0 platform, optimized profile)",
-    "disabled_commands": {"odometer"},  # Use passive CAN broadcast instead
+    "disabled_commands": {"odometer", "display_state_of_charge"},
     "extra_commands": {},
 }
 
