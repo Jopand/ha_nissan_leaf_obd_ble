@@ -143,8 +143,11 @@ class bleserial:
             self._closing = False
             raise
 
-        except BleakAbortedError:
-            logger.error("Connection aborted - check for interference or move closer")
+        except BleakAbortedError as e:
+            logger.error(
+                "Connection aborted; check interference, range, and Bluetooth proxy availability: %s",
+                e,
+            )
             self._closing = False
             raise
 

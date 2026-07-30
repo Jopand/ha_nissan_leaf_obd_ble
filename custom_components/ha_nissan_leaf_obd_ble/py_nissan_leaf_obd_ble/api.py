@@ -5,6 +5,7 @@ import logging
 
 from bleak.backends.device import BLEDevice
 
+from .elm327 import OBDStatus
 from .obd import OBD
 from .profiles import get_generation_commands, VALID_GENERATIONS, DEFAULT_GENERATION
 
@@ -85,7 +86,16 @@ class NissanLeafObdBleApiClient:
             
             data = {}
             for command in commands.values():
+                if api.status() == OBDStatus.NOT_CONNECTED:
+                    _LOGGER.warning("OBD connection lost; stopping command queries")
+                    return None
                 response = await api.query(command, force=True)
+                if api.status() == OBDStatus.NOT_CONNECTED:
+                    _LOGGER.warning(
+                        "OBD connection lost while querying %s; stopping command queries",
+                        command.name,
+                    )
+                    return None
                 # the first command is the Mystery command. If this doesn't have a response, then none of the other will
                 if command.name == "unknown" and len(response.messages) == 0:
                     break

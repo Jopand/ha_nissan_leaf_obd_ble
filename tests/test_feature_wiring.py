@@ -76,6 +76,25 @@ class FeatureWiringTest(unittest.TestCase):
             names["display_state_of_charge"], "Display state of charge"
         )
 
+    def test_failed_connection_does_not_reach_query_loop(self):
+        obd_module = ast.parse(
+            (COMPONENT / "py_nissan_leaf_obd_ble" / "obd.py").read_text()
+        )
+        create_method = next(
+            node
+            for node in ast.walk(obd_module)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "create"
+        )
+        self.assertTrue(
+            any(
+                isinstance(node, ast.Return)
+                and isinstance(node.value, ast.Constant)
+                and node.value.value is None
+                for node in ast.walk(create_method)
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

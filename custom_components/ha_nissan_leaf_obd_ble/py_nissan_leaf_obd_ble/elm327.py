@@ -113,7 +113,7 @@ class ELM327:
 
         logger.info(
             "Initializing ELM327: PROTOCOL=%s",
-            ("auto" if protocol is None else protocol,),
+            "auto" if protocol is None else protocol,
         )
 
         # ------------- open port -------------
@@ -130,8 +130,9 @@ class ELM327:
 
         except Exception as e:
             logger.warning(
-                "An error occurred: %s %s",
-                ("auto" if protocol is None else protocol, e),
+                "Unable to initialize ELM327 using protocol %s: %s",
+                "auto" if protocol is None else protocol,
+                e,
             )
             return self
 

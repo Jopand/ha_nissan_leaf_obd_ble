@@ -83,6 +83,8 @@ class OBD:
             characteristic_uuid_read=characteristic_uuid_read,
             characteristic_uuid_write=characteristic_uuid_write,
         )
+        if self.status() == OBDStatus.NOT_CONNECTED:
+            return None
         return self
 
     async def __connect(
