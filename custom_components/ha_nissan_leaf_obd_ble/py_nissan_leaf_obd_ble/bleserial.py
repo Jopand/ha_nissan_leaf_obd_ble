@@ -105,6 +105,9 @@ class bleserial:
 
         def on_disconnect(client):
             """Handle disconnection (expected or unexpected)."""
+            if client is not self._client:
+                logger.debug("Ignoring disconnect callback from superseded client")
+                return
             if self._closing:
                 logger.info("BleakClient disconnected (expected)")
             else:
@@ -182,7 +185,6 @@ class bleserial:
                 logger.debug("Disconnected from device")
             finally:
                 self._client = None
-                self._closing = False
 
     async def write(self, data):
         """Write bytes."""
