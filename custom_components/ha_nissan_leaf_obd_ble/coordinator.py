@@ -28,7 +28,7 @@ from .const import (
     STORAGE_VERSION,
 )
 from .generations import get_extra_commands_for_generation
-from .metrics import normalize_metrics
+from .metrics import merge_cached_values, normalize_metrics
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -158,7 +158,9 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
 
         Returns the merged cache (persisted + live) so sensors always display
         a value.  New data from the car updates and re-saves the cache; if the
-        device is unreachable the previous values are returned unchanged.
+        device is unreachable or a poll fails, the previous values are returned
+        unchanged so entities never flip to 'unavailable' because the dongle
+        was asleep or momentarily busy.
         """
         available = async_address_present(self.hass, self._address, connectable=True)
 
@@ -183,29 +185,47 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
                 timeout=self._fetch_timeout,
             )
         except TimeoutError as err:
+            if self._cache_data:
+                _LOGGER.debug(
+                    "BLE fetch timed out after %ss; using cached data",
+                    self._fetch_timeout,
+                )
+                self.update_interval = timedelta(seconds=self._slow_poll)
+                return dict(self._cache_data)
             raise UpdateFailed(
                 f"BLE fetch timed out after {self._fetch_timeout}s"
             ) from err
         except Exception as err:  # noqa: BLE001
+            if self._cache_data:
+                _LOGGER.debug("Unable to fetch OBD data: %s; using cached data", err)
+                self.update_interval = timedelta(seconds=self._slow_poll)
+                return dict(self._cache_data)
             raise UpdateFailed(f"Unable to fetch OBD data: {err}") from err
 
         if new_data is None:
+            if self._cache_data:
+                _LOGGER.debug("OBD adapter returned no data; using cached data")
+                self.update_interval = timedelta(seconds=self._slow_poll)
+                return dict(self._cache_data)
             raise UpdateFailed("OBD adapter returned no data (connection failed)")
 
         new_data = dict(new_data)
         self._normalize_metrics(new_data)
 
-        if not new_data:
-            # Car is in range but turned off — keep slow polling
-            _LOGGER.debug("No OBD data returned; car may be off (interval → %ds)", self._slow_poll)
-            self.update_interval = timedelta(seconds=self._slow_poll)
-        else:
-            # Car is on and responding
+        has_values = any(value is not None for value in new_data.values())
+
+        if has_values:
+            # Only keep fields that carry a real value; a missing/None field
+            # must not discard the previously valid cached reading.
+            self._cache_data = merge_cached_values(self._cache_data, new_data)
             self.update_interval = timedelta(seconds=self._fast_poll)
-            self._cache_data.update(new_data)
             await self._async_save_cache()
             _LOGGER.debug(
                 "Fetched %d sensor values from %s", len(new_data), self._address
             )
+        else:
+            # Car is in range but turned off — keep slow polling
+            _LOGGER.debug("No OBD data returned; car may be off (interval → %ds)", self._slow_poll)
+            self.update_interval = timedelta(seconds=self._slow_poll)
 
         return dict(self._cache_data)

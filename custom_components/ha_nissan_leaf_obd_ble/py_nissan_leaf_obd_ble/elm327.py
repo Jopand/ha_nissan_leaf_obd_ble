@@ -292,13 +292,19 @@ class ELM327:
         return lines
 
     async def close(self):
-        """Reset the device, and sets all attributes to unconnected states."""
+        """Close the serial port, and sets all attributes to unconnected states.
+
+        ATZ is intentionally NOT sent here: resetting the adapter right before
+        the BLE teardown makes some dongles (e.g. iCar Pro 2S) drop the link,
+        which surfaced as a false 'disconnected unexpectedly' warning.  The
+        adapter is still reset+initialized at the START of every fresh
+        connection in create().
+        """
 
         self.__status = OBDStatus.NOT_CONNECTED
 
         if self.__port is not None:
-            logger.info("closing port")
-            await self.__write(b"ATZ")
+            logger.debug("closing port")
             await self.__port.close()
             self.__port = None
 
