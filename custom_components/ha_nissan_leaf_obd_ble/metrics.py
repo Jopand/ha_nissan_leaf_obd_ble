@@ -76,6 +76,20 @@ def migrate_nominal_ah(value: object) -> object:
     return LEGACY_NOMINAL_AH.get(float(value), value)
 
 
+def merge_cached_values(cache: dict, fresh: dict) -> dict:
+    """Merge fresh readings into cached values without losing valid state.
+
+    A missing or None field in `fresh` never overwrites an existing cached
+    value, so a partial or failed poll keeps every sensor's last known value
+    instead of making it unavailable/changed to unknown.
+    """
+    merged = dict(cache)
+    for key, value in dict(fresh).items():
+        if value is not None:
+            merged[key] = value
+    return merged
+
+
 def normalize_metrics(data: dict, nominal_ah: object) -> bool:
     """Normalize persisted or freshly decoded calculated metrics in place."""
     changed = False

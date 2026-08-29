@@ -117,6 +117,44 @@ class MetricsTest(unittest.TestCase):
         self.assertNotIn("hv_battery_Ah", data)
         self.assertNotIn("state_of_health", data)
 
+    def test_merge_cached_values_keeps_last_known_state(self):
+        cache = {"state_of_charge": 61.0, "odometer": 100, "range_remaining": None}
+        fresh = {"state_of_charge": 63.0, "range_remaining": None}
+
+        merged = metrics.merge_cached_values(cache, fresh)
+
+        self.assertEqual(merged["state_of_charge"], 63.0)
+        self.assertEqual(merged["odometer"], 100)
+        self.assertIsNone(merged["range_remaining"])
+
+    def test_merge_cached_values_ignores_none_fields(self):
+        cache = {"state_of_charge": 61.0, "eco_mode": None}
+
+        merged = metrics.merge_cached_values(
+            cache, {"state_of_charge": None, "eco_mode": True}
+        )
+
+        self.assertEqual(merged["state_of_charge"], 61.0)
+        self.assertEqual(merged["eco_mode"], True)
+
+    def test_merge_cached_values_does_not_mutate_inputs(self):
+        cache = {"state_of_charge": 61.0}
+        fresh = {"state_of_charge": 55.0}
+
+        merged = metrics.merge_cached_values(cache, fresh)
+
+        self.assertEqual(merged["state_of_charge"], 55.0)
+        self.assertEqual(cache["state_of_charge"], 61.0)
+        self.assertEqual(fresh, {"state_of_charge": 55.0})
+
+    def test_merge_cached_values_returns_a_copy(self):
+        cache = {"state_of_charge": 61.0}
+
+        merged = metrics.merge_cached_values(cache, {})
+
+        self.assertEqual(merged, cache)
+        self.assertIsNot(merged, cache)
+
 
 if __name__ == "__main__":
     unittest.main()
