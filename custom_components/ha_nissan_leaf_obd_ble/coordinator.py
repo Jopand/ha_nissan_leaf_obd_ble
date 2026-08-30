@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.components import bluetooth
@@ -32,6 +32,13 @@ from .metrics import merge_cached_values, normalize_metrics
 
 _LOGGER = logging.getLogger(__name__)
 
+_CRITICAL_FRESHNESS_KEYS = {
+    "display_state_of_charge",
+    "hv_battery_Ah",
+    "odometer",
+    "state_of_charge",
+}
+
 
 class NissanLeafCoordinator(DataUpdateCoordinator):
     """Coordinator that fetches OBD data and persists it across HA restarts."""
@@ -58,6 +65,14 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
         # Persistent cache — populated from storage before the first poll so
         # sensors immediately reflect the last known values after a restart.
         self._cache_data: dict[str, Any] = {}
+        self.last_poll_attempt: datetime | None = None
+        self.last_successful_update: datetime | None = None
+        self.last_fresh_value_count = 0
+        self.last_poll_succeeded = False
+        self.last_updated_by_key: dict[str, datetime] = {}
+        self._zero_fresh_poll_logged = False
+        self._partial_poll_logged = False
+        self._last_stale_critical_keys: frozenset[str] = frozenset()
 
         # Per-entry storage file so multiple Leaf devices stay independent.
         self._store: Store = Store(
@@ -153,6 +168,60 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
     # Data fetch
     # ------------------------------------------------------------------
 
+    def _record_failed_poll(self, reason: str, *, warn: bool) -> None:
+        """Record a poll that produced no fresh values."""
+        self.last_fresh_value_count = 0
+        self.last_poll_succeeded = False
+        if warn and not self._zero_fresh_poll_logged:
+            _LOGGER.warning(
+                "OBD poll produced no fresh values (%s); retaining cached sensor data",
+                reason,
+            )
+            self._zero_fresh_poll_logged = True
+
+    def _record_fresh_poll(
+        self, fresh_data: dict[str, Any], *, poll_succeeded: bool
+    ) -> None:
+        """Record fresh fields and log stale critical fields once."""
+        now = datetime.now(timezone.utc)
+        fresh_keys = set(fresh_data)
+        self.last_fresh_value_count = len(fresh_data)
+        self.last_poll_succeeded = poll_succeeded
+        self.last_updated_by_key.update(dict.fromkeys(fresh_keys, now))
+
+        if poll_succeeded:
+            self.last_successful_update = now
+        if poll_succeeded and self._zero_fresh_poll_logged:
+            _LOGGER.info(
+                "OBD polling recovered with %d fresh values", len(fresh_data)
+            )
+            self._zero_fresh_poll_logged = False
+
+        if not poll_succeeded and not self._partial_poll_logged:
+            _LOGGER.warning(
+                "OBD poll returned partial data after command %s; fresh values: %s",
+                getattr(self.api, "last_failed_command", None) or "unknown",
+                sorted(fresh_data),
+            )
+            self._partial_poll_logged = True
+        elif poll_succeeded and self._partial_poll_logged:
+            _LOGGER.info("OBD polling recovered from partial updates")
+            self._partial_poll_logged = False
+
+        retained_critical = frozenset(
+            key
+            for key in _CRITICAL_FRESHNESS_KEYS
+            if key in self._cache_data and key not in fresh_keys
+        )
+        if retained_critical and retained_critical != self._last_stale_critical_keys:
+            _LOGGER.warning(
+                "OBD poll did not refresh critical cached values: %s",
+                sorted(retained_critical),
+            )
+        elif not retained_critical and self._last_stale_critical_keys:
+            _LOGGER.info("All critical OBD values are refreshing again")
+        self._last_stale_critical_keys = retained_critical
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch fresh data from the OBD adapter.
 
@@ -162,12 +231,14 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
         unchanged so entities never flip to 'unavailable' because the dongle
         was asleep or momentarily busy.
         """
+        self.last_poll_attempt = datetime.now(timezone.utc)
         address = self._address.upper()
         ble_device = bluetooth.async_ble_device_from_address(
             self.hass, address, connectable=True
         )
 
         if ble_device is None:
+            self._record_failed_poll("no connectable BLE route", warn=False)
             reason = bluetooth.async_address_reachability_diagnostics(
                 self.hass,
                 address,
@@ -196,6 +267,9 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
                 timeout=self._fetch_timeout,
             )
         except TimeoutError as err:
+            self._record_failed_poll(
+                f"fetch timed out after {self._fetch_timeout}s", warn=True
+            )
             if self._cache_data:
                 _LOGGER.debug(
                     "BLE fetch timed out after %ss; using cached data",
@@ -207,6 +281,7 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
                 f"BLE fetch timed out after {self._fetch_timeout}s"
             ) from err
         except Exception as err:  # noqa: BLE001
+            self._record_failed_poll(str(err), warn=True)
             if self._cache_data:
                 _LOGGER.debug("Unable to fetch OBD data: %s; using cached data", err)
                 self.update_interval = timedelta(seconds=self._slow_poll)
@@ -214,27 +289,39 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Unable to fetch OBD data: {err}") from err
 
         if new_data is None:
+            self._record_failed_poll("adapter returned no data", warn=True)
             if self._cache_data:
                 _LOGGER.debug("OBD adapter returned no data; using cached data")
                 self.update_interval = timedelta(seconds=self._slow_poll)
                 return dict(self._cache_data)
             raise UpdateFailed("OBD adapter returned no data (connection failed)")
 
-        new_data = dict(new_data)
+        new_data = {
+            key: value for key, value in dict(new_data).items() if value is not None
+        }
         self._normalize_metrics(new_data)
 
-        has_values = any(value is not None for value in new_data.values())
+        has_values = bool(new_data)
 
         if has_values:
             # Only keep fields that carry a real value; a missing/None field
             # must not discard the previously valid cached reading.
             self._cache_data = merge_cached_values(self._cache_data, new_data)
-            self.update_interval = timedelta(seconds=self._fast_poll)
+            poll_succeeded = getattr(self.api, "last_poll_succeeded", True)
+            self._record_fresh_poll(
+                new_data, poll_succeeded=poll_succeeded
+            )
+            poll_interval = self._fast_poll if poll_succeeded else self._slow_poll
+            self.update_interval = timedelta(seconds=poll_interval)
             await self._async_save_cache()
             _LOGGER.debug(
-                "Fetched %d sensor values from %s", len(new_data), self._address
+                "OBD poll completed with %d fresh values from %s: %s",
+                len(new_data),
+                self._address,
+                sorted(new_data),
             )
         else:
+            self._record_failed_poll("poll returned no decoded values", warn=True)
             # Car is in range but turned off — keep slow polling
             _LOGGER.debug("No OBD data returned; car may be off (interval → %ds)", self._slow_poll)
             self.update_interval = timedelta(seconds=self._slow_poll)

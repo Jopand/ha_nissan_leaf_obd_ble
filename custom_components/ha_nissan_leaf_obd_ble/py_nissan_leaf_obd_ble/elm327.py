@@ -1,5 +1,7 @@
 """Part of python-OBD (a derivative of pyOBD)."""
 
+from __future__ import annotations
+
 ########################################################################
 #                                                                      #
 # python-OBD: A python OBD-II serial module derived from pyobd         #
@@ -36,6 +38,7 @@ import re
 import time
 
 from bleak.backends.device import BLEDevice
+from bleak.exc import BleakError
 
 from .bleserial import bleserial
 from .protocols.protocol import Message
@@ -88,6 +91,8 @@ class ELM327:
             read_char,
             write_char,
         )
+        self.__port.timeout = timeout
+        self.__port.write_timeout = timeout
         self.__protocol = ISO_15765_4_11bit_500k()
 
     @classmethod
@@ -111,6 +116,23 @@ class ELM327:
             characteristic_uuid_write=characteristic_uuid_write,
         )
 
+        try:
+            await self._initialize(protocol, check_voltage, start_low_power)
+        except (BleakError, asyncio.TimeoutError) as err:
+            logger.debug(
+                "Unable to initialize ELM327 using protocol %s: %s",
+                "auto" if protocol is None else protocol,
+                err,
+            )
+        finally:
+            if self.__status != OBDStatus.CAR_CONNECTED:
+                await self.close()
+
+        return self
+
+    async def _initialize(self, protocol, check_voltage, start_low_power):
+        """Open the BLE transport and initialize the ELM327 session."""
+
         logger.info(
             "Initializing ELM327: PROTOCOL=%s",
             "auto" if protocol is None else protocol,
@@ -128,13 +150,13 @@ class ELM327:
             if self.__port is not None:
                 await self.__port.open()
 
-        except Exception as e:
+        except (BleakError, asyncio.TimeoutError) as e:
             logger.debug(
                 "Unable to initialize ELM327 using protocol %s: %s",
                 "auto" if protocol is None else protocol,
                 e,
             )
-            return self
+            return
 
         # If we start with the IC in the low power state we need to wake it up
         if start_low_power:
@@ -145,45 +167,45 @@ class ELM327:
         try:
             await self.__send(b"ATZ", delay=1)  # wait 1 second for ELM to initialize
             # return data can be junk, so don't bother checking
-        except Exception as e:
+        except (BleakError, asyncio.TimeoutError) as e:
             await self.__error(e)
-            return self
+            return
 
         # -------------------------- ATE0 (echo OFF) --------------------------
         r = await self.__send(b"ATE0")
         if not self.__isok(r, expectEcho=True):
             await self.__error("ATE0 did not return 'OK'")
-            return self
+            return
 
         # ------------------------ ATSP6 (set protocol 6) ---------------------
         r = await self.__send(b"ATSP6")
         if not self.__isok(r):
             await self.__error("ATSP6 did not return 'OK'")
-            return self
+            return
 
         # ------------------------- ATH1 (headers ON) -------------------------
         r = await self.__send(b"ATH1")
         if not self.__isok(r):
             await self.__error("ATH1 did not return 'OK', or echoing is still ON")
-            return self
+            return
 
         # ------------------------ ATL0 (linefeeds OFF) -----------------------
         r = await self.__send(b"ATL0")
         if not self.__isok(r):
             await self.__error("ATL0 did not return 'OK'")
-            return self
+            return
 
         # ------------------------ ATS0 (printing spaces OFF)------------------
         r = await self.__send(b"ATS0")
         if not self.__isok(r):
             await self.__error("ATS0 did not return 'OK'")
-            return self
+            return
 
         # ----------------- ATCAF0 (CAN automatic formatting OFF)--------------
         r = await self.__send(b"ATCAF0")
         if not self.__isok(r):
             await self.__error("ATCAF0 did not return 'OK'")
-            return self
+            return
 
         # by now, we've successfuly communicated with the ELM, but not the car
         self.__status = OBDStatus.ELM_CONNECTED
@@ -193,20 +215,19 @@ class ELM327:
             r = await self.__send(b"AT RV")
             if not r or len(r) != 1 or r[0] == "":
                 await self.__error("No answer from 'AT RV'")
-                return self
+                return
             try:
                 if float(r[0].lower().replace("v", "")) < 6:
                     logger.error("OBD2 socket disconnected")
-                    return self
+                    return
             except ValueError:
                 await self.__error("Incorrect response from 'AT RV'")
-                return self
+                return
             # by now, we've successfuly connected to the OBD socket
             self.__status = OBDStatus.OBD_CONNECTED
 
         # try to communicate with the car, and load the correct protocol parser
         self.__status = OBDStatus.CAR_CONNECTED
-        return self
 
     def __isok(self, lines, expectEcho=False):
         if not lines:
@@ -227,6 +248,8 @@ class ELM327:
 
     def status(self):
         """Return the status."""
+        if self.__port is None or not self.__port.is_connected:
+            return OBDStatus.NOT_CONNECTED
         return self.__status
 
     def protocol_name(self):
@@ -303,10 +326,11 @@ class ELM327:
 
         self.__status = OBDStatus.NOT_CONNECTED
 
-        if self.__port is not None:
+        port = self.__port
+        self.__port = None
+        if port is not None:
             logger.debug("closing port")
-            await self.__port.close()
-            self.__port = None
+            await port.close()
 
     async def send_and_parse(self, cmd) -> list[Message] | None:
         """Send OBDCommands.
@@ -406,14 +430,14 @@ class ELM327:
             try:
                 self.__port.reset_input_buffer()  # dump everything in the input buffer
                 await self.__port.write(cmd)  # turn the string into bytes and write
-            except Exception as e:
-                logger.critical("Device disconnected while writing: %s", e)
+            except Exception:
                 self.__status = OBDStatus.NOT_CONNECTED
-                await self.__port.close()
+                port = self.__port
                 self.__port = None
-                return
+                await port.close()
+                raise
         else:
-            logger.info("cannot perform __write() when unconnected")
+            raise BleakError("BLE device is not connected")
 
     async def __read(self, end_marker=ELM_PROMPT):
         """Low-level read function.
@@ -423,21 +447,27 @@ class ELM327:
         returns a list of [/r/n] delimited strings
         """
         if not self.__port:
-            logger.info("cannot perform __read() when unconnected")
-            return []
+            raise BleakError("BLE device is not connected")
 
         buffer = bytearray()
+        deadline = time.monotonic() + self.timeout
 
         while True:
             # retrieve as much data as possible
             try:
-                data = await self.__port.read(self.__port.in_waiting or 1)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Timed out waiting for ELM327 response")
+                data = await asyncio.wait_for(
+                    self.__port.read(self.__port.in_waiting or 1),
+                    timeout=remaining,
+                )
             except Exception:
                 self.__status = OBDStatus.NOT_CONNECTED
-                await self.__port.close()
+                port = self.__port
                 self.__port = None
-                logger.critical("Device disconnected while reading")
-                return []
+                await port.close()
+                raise
 
             # if nothing was received
             if not data:
@@ -495,10 +525,10 @@ class ELM327:
                 break
             except Exception:
                 self.__status = OBDStatus.NOT_CONNECTED
-                await self.__port.close()
+                port = self.__port
                 self.__port = None
-                logger.critical("Device disconnected while reading")
-                return []
+                await port.close()
+                raise
 
             if not data:
                 break

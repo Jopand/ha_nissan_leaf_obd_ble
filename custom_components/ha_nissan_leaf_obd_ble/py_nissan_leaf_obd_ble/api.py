@@ -1,15 +1,30 @@
 """API for nissan leaf obd ble."""
 
-# import asyncio
+from __future__ import annotations
+
 import logging
+import time
 
 from bleak.backends.device import BLEDevice
+from bleak.exc import BleakError
 
 from .elm327 import OBDStatus
 from .obd import OBD
 from .profiles import get_generation_commands, VALID_GENERATIONS, DEFAULT_GENERATION
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
+
+_PRIORITY_COMMANDS = {
+    "ze1": ("unknown", "lbc", "odometer", "display_state_of_charge"),
+    "ze0": ("unknown", "lbc"),
+    "aze0": ("unknown", "lbc"),
+    "auto": (
+        "unknown",
+        "lbc",
+        "odometer",
+        "display_state_of_charge",
+    ),
+}
 
 
 class NissanLeafObdBleApiClient:
@@ -45,6 +60,9 @@ class NissanLeafObdBleApiClient:
             ValueError: if generation is not recognized
         """
 
+        self.last_poll_succeeded = False
+        self.last_failed_command: str | None = None
+
         # Validate and retrieve generation-specific command table
         if generation not in VALID_GENERATIONS:
             raise ValueError(
@@ -75,25 +93,92 @@ class NissanLeafObdBleApiClient:
                 extra_commands=extra_commands,
                 disabled_commands=disabled_commands,
             )
-            
+
+            priority_names = _PRIORITY_COMMANDS[generation]
+            ordered_commands = [
+                commands[name] for name in priority_names if name in commands
+            ]
+            ordered_commands.extend(
+                command
+                for name, command in commands.items()
+                if name not in priority_names
+            )
+
             data = {}
-            for command in commands.values():
+            started = time.monotonic()
+            attempted = 0
+            _LOGGER.debug(
+                "Starting OBD poll for generation %s with %d commands",
+                generation,
+                len(ordered_commands),
+            )
+            for command in ordered_commands:
                 if api.status() == OBDStatus.NOT_CONNECTED:
-                    _LOGGER.debug("OBD connection lost; stopping command queries")
-                    return None
-                response = await api.query(command, force=True)
-                if api.status() == OBDStatus.NOT_CONNECTED:
+                    self.last_failed_command = command.name
                     _LOGGER.debug(
-                        "OBD connection lost while querying %s; stopping command queries",
+                        "OBD connection lost before %s after %d commands; "
+                        "returning %d collected values",
                         command.name,
+                        attempted,
+                        len(data),
                     )
-                    return None
-                # the first command is the Mystery command. If this doesn't have a response, then none of the other will
-                if command.name == "unknown" and len(response.messages) == 0:
-                    break
+                    return data or None
+
+                attempted += 1
+                command_started = time.monotonic()
+                try:
+                    response = await api.query(command, force=True)
+                except (BleakError, TimeoutError) as err:
+                    self.last_failed_command = command.name
+                    _LOGGER.debug(
+                        "OBD command %s failed after %.2fs: %s; returning %d "
+                        "collected values",
+                        command.name,
+                        time.monotonic() - command_started,
+                        err,
+                        len(data),
+                    )
+                    return data or None
+
+                if command.name == "unknown" and not response.messages:
+                    _LOGGER.debug(
+                        "No response to probe command; continuing with known OBD queries"
+                    )
+                    continue
+
                 if response.value is not None:
-                    data.update(response.value)  # send the command, and parse the response
-            _LOGGER.debug("Returning data: %s", data)
+                    fresh_values = {
+                        key: value
+                        for key, value in response.value.items()
+                        if value is not None
+                    }
+                    data.update(fresh_values)
+                    _LOGGER.debug(
+                        "OBD command %s produced %d fresh values: %s",
+                        command.name,
+                        len(fresh_values),
+                        sorted(fresh_values),
+                    )
+
+                if api.status() == OBDStatus.NOT_CONNECTED:
+                    self.last_failed_command = command.name
+                    _LOGGER.debug(
+                        "OBD connection lost while querying %s; returning %d "
+                        "collected values",
+                        command.name,
+                        len(data),
+                    )
+                    return data or None
+
+            self.last_poll_succeeded = True
+            _LOGGER.debug(
+                "OBD poll completed in %.2fs after %d commands with %d fresh "
+                "values: %s",
+                time.monotonic() - started,
+                attempted,
+                len(data),
+                sorted(data),
+            )
             return data
         finally:
             await api.close()
