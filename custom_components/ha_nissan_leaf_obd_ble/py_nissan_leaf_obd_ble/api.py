@@ -15,15 +15,9 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 class NissanLeafObdBleApiClient:
     """API for connecting to the Nissan Leaf OBD BLE dongle."""
 
-    def __init__(
-        self,
-        ble_device: BLEDevice,
-    ) -> None:
-        """Initialise."""
-        self._ble_device = ble_device
-
     async def async_get_data(
         self,
+        ble_device: BLEDevice,
         options=None,
         generation: str = DEFAULT_GENERATION,
         extra_commands: dict | None = None,
@@ -32,6 +26,7 @@ class NissanLeafObdBleApiClient:
         """Get data from the API.
         
         Args:
+            ble_device: Fresh connectable route selected by Home Assistant.
             options: BLE connection options (service_uuid, characteristic_uuid_read, characteristic_uuid_write)
             generation: Nissan Leaf generation profile. Options:
                 - 'auto' (default): Automatic mode, includes both active and passive odometer sources.
@@ -50,9 +45,6 @@ class NissanLeafObdBleApiClient:
             ValueError: if generation is not recognized
         """
 
-        if self._ble_device is None:
-            return {}
-        
         # Validate and retrieve generation-specific command table
         if generation not in VALID_GENERATIONS:
             raise ValueError(
@@ -66,7 +58,7 @@ class NissanLeafObdBleApiClient:
         characteristic_uuid_write = opts.get("characteristic_uuid_write")
 
         api = await OBD.create(
-            self._ble_device,
+            ble_device,
             protocol="6",
             service_uuid=service_uuid,
             characteristic_uuid_read=characteristic_uuid_read,
@@ -87,11 +79,11 @@ class NissanLeafObdBleApiClient:
             data = {}
             for command in commands.values():
                 if api.status() == OBDStatus.NOT_CONNECTED:
-                    _LOGGER.warning("OBD connection lost; stopping command queries")
+                    _LOGGER.debug("OBD connection lost; stopping command queries")
                     return None
                 response = await api.query(command, force=True)
                 if api.status() == OBDStatus.NOT_CONNECTED:
-                    _LOGGER.warning(
+                    _LOGGER.debug(
                         "OBD connection lost while querying %s; stopping command queries",
                         command.name,
                     )

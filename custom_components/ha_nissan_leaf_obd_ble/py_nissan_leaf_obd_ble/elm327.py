@@ -129,7 +129,7 @@ class ELM327:
                 await self.__port.open()
 
         except Exception as e:
-            logger.warning(
+            logger.debug(
                 "Unable to initialize ELM327 using protocol %s: %s",
                 "auto" if protocol is None else protocol,
                 e,

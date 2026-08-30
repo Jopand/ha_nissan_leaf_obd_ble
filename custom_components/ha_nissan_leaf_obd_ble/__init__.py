@@ -9,14 +9,10 @@ from __future__ import annotations
 
 import logging
 
-from bleak_retry_connector import get_device
-
 from homeassistant.components import bluetooth
-from homeassistant.components.bluetooth import async_last_service_info
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, Platform
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.typing import ConfigType
 
 from .py_nissan_leaf_obd_ble import NissanLeafObdBleApiClient
@@ -73,27 +69,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     address: str = entry.data[CONF_ADDRESS]
 
-    # Try to resolve a BLEDevice from the current scan results or from
-    # HA's last-seen Bluetooth history.  Using connectable=False for the
-    # history lookup lets us create the API client even when the car is
-    # away from home — the coordinator handles the "device not reachable"
-    # case gracefully by returning persisted data.
-    ble_device = (
-        bluetooth.async_ble_device_from_address(hass, address.upper(), connectable=True)
-        or (
-            (info := async_last_service_info(hass, address.upper(), connectable=False))
-            and info.device
-        )
-        or await get_device(address)
-    )
-
-    if not ble_device:
-        raise ConfigEntryNotReady(
-            f"Could not find OBD BLE adapter with address {address}. "
-            "Ensure the adapter has been seen at least once by HA's Bluetooth stack."
-        )
-
-    api = NissanLeafObdBleApiClient(ble_device)
+    api = NissanLeafObdBleApiClient()
 
     coordinator = NissanLeafCoordinator(hass, entry, api)
 

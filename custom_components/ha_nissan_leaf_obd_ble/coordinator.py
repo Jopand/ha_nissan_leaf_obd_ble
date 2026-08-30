@@ -7,7 +7,7 @@ import logging
 from datetime import timedelta
 from typing import Any
 
-from homeassistant.components.bluetooth.api import async_address_present
+from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
@@ -48,7 +48,7 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
             _LOGGER,
             name=DOMAIN,
             update_interval=timedelta(seconds=DEFAULT_FAST_POLL),
-            always_update=True,
+            always_update=False,
         )
 
         self._address: str = entry.data[CONF_ADDRESS]
@@ -162,12 +162,22 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
         unchanged so entities never flip to 'unavailable' because the dongle
         was asleep or momentarily busy.
         """
-        available = async_address_present(self.hass, self._address, connectable=True)
+        address = self._address.upper()
+        ble_device = bluetooth.async_ble_device_from_address(
+            self.hass, address, connectable=True
+        )
 
-        if not available:
+        if ble_device is None:
+            reason = bluetooth.async_address_reachability_diagnostics(
+                self.hass,
+                address,
+                bluetooth.BluetoothReachabilityIntent.CONNECTION,
+            )
             _LOGGER.debug(
-                "OBD adapter %s not in range; using cached data (interval → %ds)",
+                "No connectable BLE route for %s: %s; using cached data "
+                "(interval -> %ds)",
                 self._address,
+                reason,
                 self._xs_poll,
             )
             self.update_interval = timedelta(seconds=self._xs_poll)
@@ -178,6 +188,7 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
         try:
             new_data = await asyncio.wait_for(
                 self.api.async_get_data(
+                    ble_device=ble_device,
                     options=self._options,
                     generation=self._generation,
                     extra_commands=self._generation_extra_commands or None,

@@ -69,6 +69,10 @@ class AdapterProfileTest(unittest.TestCase):
             services,
             {const.DEFAULT_SERVICE_UUID, const.VGATE_ICAR_SERVICE_UUID},
         )
+        self.assertTrue(
+            all(matcher.get("connectable") is True for matcher in manifest["bluetooth"])
+        )
+        self.assertIn("bluetooth_adapters", manifest["dependencies"])
         self.assertEqual(manifest["version"], const.VERSION)
 
 
