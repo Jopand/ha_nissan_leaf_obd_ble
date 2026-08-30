@@ -9,7 +9,7 @@ import types
 import unittest
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 ROOT = Path(__file__).parents[1]
 COMPONENT = ROOT / "custom_components" / "ha_nissan_leaf_obd_ble"
@@ -34,6 +34,11 @@ def load_coordinator_module():
 
     class Store:
         """Stub Home Assistant storage class."""
+
+    class BluetoothReachabilityIntent:
+        """Stub reachability intent enum."""
+
+        CONNECTION = "connection"
 
     package_name = "test_nissan_leaf_component"
     package = _module(package_name)
@@ -77,11 +82,10 @@ def load_coordinator_module():
         "homeassistant": _module("homeassistant"),
         "homeassistant.components": _module("homeassistant.components"),
         "homeassistant.components.bluetooth": _module(
-            "homeassistant.components.bluetooth"
-        ),
-        "homeassistant.components.bluetooth.api": _module(
-            "homeassistant.components.bluetooth.api",
-            async_address_present=lambda *args, **kwargs: True,
+            "homeassistant.components.bluetooth",
+            async_ble_device_from_address=lambda *args, **kwargs: object(),
+            async_address_reachability_diagnostics=lambda *args, **kwargs: "reachable",
+            BluetoothReachabilityIntent=BluetoothReachabilityIntent,
         ),
         "homeassistant.config_entries": _module(
             "homeassistant.config_entries", ConfigEntry=object
@@ -169,9 +173,11 @@ class FakeApi:
     def __init__(self, result) -> None:
         self.result = result
         self.calls = 0
+        self.call_kwargs = []
 
     async def async_get_data(self, **kwargs):
         self.calls += 1
+        self.call_kwargs.append(kwargs)
         if isinstance(self.result, BaseException):
             raise self.result
         return self.result
@@ -194,8 +200,12 @@ def make_coordinator(result, cache=None, available=True):
     coordinator._normalize_metrics = lambda data: False
     coordinator._async_save_cache = AsyncMock()
     coordinator.update_interval = None
-    coordinator_module.async_address_present = (
-        lambda *args, **kwargs: available
+    coordinator.ble_device = object() if available else None
+    coordinator_module.bluetooth.async_ble_device_from_address = Mock(
+        return_value=coordinator.ble_device
+    )
+    coordinator_module.bluetooth.async_address_reachability_diagnostics = Mock(
+        return_value="not connectable"
     )
     return coordinator
 
@@ -286,6 +296,33 @@ class CoordinatorReliabilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(coordinator.update_interval, timedelta(seconds=10))
         coordinator._async_save_cache.assert_awaited_once_with()
 
+    async def test_fresh_connectable_route_is_resolved_for_every_poll(self):
+        coordinator = make_coordinator({"state_of_charge": 61.0})
+        local_adapter = object()
+        esphome_proxy = object()
+        coordinator_module.bluetooth.async_ble_device_from_address = Mock(
+            side_effect=(local_adapter, esphome_proxy)
+        )
+
+        await coordinator._async_update_data()
+        await coordinator._async_update_data()
+
+        self.assertEqual(
+            [call["ble_device"] for call in coordinator.api.call_kwargs],
+            [local_adapter, esphome_proxy],
+        )
+        self.assertEqual(
+            coordinator_module.bluetooth.async_ble_device_from_address.call_args_list,
+            [
+                unittest.mock.call(
+                    coordinator.hass, "AA:BB:CC:DD:EE:FF", connectable=True
+                ),
+                unittest.mock.call(
+                    coordinator.hass, "AA:BB:CC:DD:EE:FF", connectable=True
+                ),
+            ],
+        )
+
     async def test_no_valid_fields_keeps_cache_without_saving(self):
         coordinator = make_coordinator(
             {"state_of_charge": None}, {"state_of_charge": 61.0}
@@ -309,6 +346,11 @@ class CoordinatorReliabilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data, {"state_of_charge": 61.0})
         self.assertEqual(coordinator.api.calls, 0)
         self.assertEqual(coordinator.update_interval, timedelta(seconds=3600))
+        coordinator_module.bluetooth.async_address_reachability_diagnostics.assert_called_once_with(
+            coordinator.hass,
+            "AA:BB:CC:DD:EE:FF",
+            coordinator_module.bluetooth.BluetoothReachabilityIntent.CONNECTION,
+        )
 
 
 class BleShutdownWiringTest(unittest.TestCase):
@@ -351,6 +393,13 @@ class BleSerialLifecycleTest(unittest.IsolatedAsyncioTestCase):
         class Client:
             callback = None
 
+            class Services:
+                @staticmethod
+                def get_characteristic(characteristic):
+                    return object()
+
+            services = Services()
+
             async def start_notify(self, characteristic, callback):
                 return None
 
@@ -378,6 +427,46 @@ class BleSerialLifecycleTest(unittest.IsolatedAsyncioTestCase):
         old_client.callback(old_client)
 
         self.assertIs(serial._client, new_client)
+
+    async def test_missing_characteristic_reconnects_without_service_cache(self):
+        class Device:
+            name = "IOS-VLINK"
+
+        class Services:
+            def __init__(self, found):
+                self.found = found
+
+            def get_characteristic(self, characteristic):
+                return object() if self.found else None
+
+        class Client:
+            def __init__(self, found):
+                self.services = Services(found)
+                self.clear_cache = AsyncMock(return_value=True)
+                self.disconnect = AsyncMock()
+                self.start_notify = AsyncMock()
+
+        stale_client = Client(False)
+        fresh_client = Client(True)
+        clients = iter((stale_client, fresh_client))
+        cache_options = []
+
+        async def establish_connection(*args, use_services_cache, **kwargs):
+            cache_options.append(use_services_cache)
+            return next(clients)
+
+        bleserial_module.establish_connection = establish_connection
+        serial = bleserial_module.bleserial(Device(), "service", "read", "write")
+
+        with self.assertLogs(bleserial_module.logger, level="WARNING") as logs:
+            await serial.open()
+
+        self.assertEqual(cache_options, [True, False])
+        self.assertIn("Expected GATT characteristic(s) missing", logs.output[0])
+        stale_client.clear_cache.assert_awaited_once_with()
+        stale_client.disconnect.assert_awaited_once_with()
+        fresh_client.start_notify.assert_awaited_once()
+        self.assertIs(serial._client, fresh_client)
 
 
 if __name__ == "__main__":

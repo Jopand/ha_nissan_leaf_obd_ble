@@ -109,20 +109,50 @@ class bleserial:
                 logger.debug("Ignoring disconnect callback from superseded client")
                 return
             if self._closing:
-                logger.info("BleakClient disconnected (expected)")
+                logger.debug("BleakClient disconnected (expected)")
             else:
                 logger.error("BleakClient disconnected unexpectedly")
             self._client = None
 
         try:
             logger.debug("Connecting to ble_device: %s %s", self._ble_device, self._ble_device.name)
-            self._client = await establish_connection(
-                BleakClientWithServiceCache,  # Use BleakClientWithServiceCache for service caching
-                self._ble_device,
-                self._ble_device.name or "Unknown Device",
-                disconnected_callback=on_disconnect,
-                max_attempts=3,  # Will retry up to 3 times with backoff
-            )
+            for attempt in range(2):
+                self._client = await establish_connection(
+                    BleakClientWithServiceCache,
+                    self._ble_device,
+                    self._ble_device.name or "Unknown Device",
+                    disconnected_callback=on_disconnect,
+                    max_attempts=3,
+                    use_services_cache=attempt == 0,
+                )
+
+                missing_characteristics = [
+                    uuid
+                    for uuid in {
+                        self._characteristic_uuid_read,
+                        self._characteristic_uuid_write,
+                    }
+                    if self._client.services.get_characteristic(uuid) is None
+                ]
+                if not missing_characteristics:
+                    break
+
+                logger.warning(
+                    "Expected GATT characteristic(s) missing: %s",
+                    ", ".join(sorted(missing_characteristics)),
+                )
+                if attempt:
+                    raise BleakError(
+                        "Expected GATT characteristic(s) not found: "
+                        + ", ".join(sorted(missing_characteristics))
+                    )
+
+                client = self._client
+                self._closing = True
+                await client.clear_cache()
+                await client.disconnect()
+                self._client = None
+                self._closing = False
 
             logger.debug("Connected to ble_device: %s", self._ble_device)
             logger.debug(
@@ -135,19 +165,22 @@ class bleserial:
             logger.debug("Notifications started")
 
         except BleakNotFoundError as e:
-            logger.error("Device not found - it may have moved out of range: %s", e)
+            await self._cleanup_failed_open()
+            logger.debug("Device not found - it may have moved out of range: %s", e)
             self._closing = False
             raise
 
         except BleakOutOfConnectionSlotsError:
-            logger.error(
+            await self._cleanup_failed_open()
+            logger.debug(
                 "No connection slots available - try disconnecting other devices"
             )
             self._closing = False
             raise
 
         except BleakAbortedError as e:
-            logger.error(
+            await self._cleanup_failed_open()
+            logger.debug(
                 "Connection aborted; check interference, range, and Bluetooth proxy availability: %s",
                 e,
             )
@@ -155,14 +188,28 @@ class bleserial:
             raise
 
         except BleakConnectionError as e:
-            logger.error("Connection failed: %s", e)
+            await self._cleanup_failed_open()
+            logger.debug("Connection failed: %s", e)
             self._closing = False
             raise
 
         except BleakError as e:
-            logger.error("Failed to connect or start notifications: %s", e)
+            await self._cleanup_failed_open()
+            logger.debug("Failed to connect or start notifications: %s", e)
             self._closing = False
             raise
+
+    async def _cleanup_failed_open(self):
+        """Disconnect a client left behind by failed GATT setup."""
+        if not self._client:
+            return
+        self._closing = True
+        client = self._client
+        try:
+            with suppress(BleakError):
+                await client.disconnect()
+        finally:
+            self._client = None
 
     async def close(self):
         """Close the port (expected disconnect)."""
@@ -191,7 +238,7 @@ class bleserial:
         if isinstance(data, str):
             data = data.encode()
         try:
-            logger.info(
+            logger.debug(
                 "Writing data to characteristic UUID: %s Data: %s",
                 self._characteristic_uuid_write,
                 data,
