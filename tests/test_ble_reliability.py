@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import importlib.util
 import sys
 import types
@@ -140,6 +141,7 @@ def load_bleserial_module():
         BleakConnectionError=BleakError,
         BleakNotFoundError=BleakError,
         BleakOutOfConnectionSlotsError=BleakError,
+        DISCONNECT_TIMEOUT=0.1,
         establish_connection=establish_connection,
     )
     stubs = {
@@ -165,6 +167,107 @@ def load_bleserial_module():
 
 
 bleserial_module = load_bleserial_module()
+
+
+def load_elm327_module(serial_class):
+    """Load elm327.py with a supplied BLE serial implementation."""
+
+    class BleakError(Exception):
+        """Stub base Bleak error."""
+
+    class Protocol:
+        ELM_NAME = "CAN"
+        ELM_ID = "6"
+
+        def __call__(self, lines):
+            return []
+
+    package_name = "test_nissan_leaf_obd_library"
+    package = _module(package_name)
+    package.__path__ = []
+    protocols = _module(f"{package_name}.protocols")
+    protocols.__path__ = []
+    stubs = {
+        package_name: package,
+        f"{package_name}.bleserial": _module(
+            f"{package_name}.bleserial", bleserial=serial_class
+        ),
+        f"{package_name}.protocols": protocols,
+        f"{package_name}.protocols.protocol": _module(
+            f"{package_name}.protocols.protocol", Message=object
+        ),
+        f"{package_name}.protocols.protocol_can": _module(
+            f"{package_name}.protocols.protocol_can",
+            ISO_15765_4_11bit_500k=Protocol,
+        ),
+        f"{package_name}.utils": _module(
+            f"{package_name}.utils", isHex=lambda value: True
+        ),
+        "bleak": _module("bleak"),
+        "bleak.backends": _module("bleak.backends"),
+        "bleak.backends.device": _module(
+            "bleak.backends.device", BLEDevice=object
+        ),
+        "bleak.exc": _module("bleak.exc", BleakError=BleakError),
+    }
+
+    module_name = f"{package_name}.elm327"
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        COMPONENT / "py_nissan_leaf_obd_ble" / "elm327.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    stubs[module_name] = module
+    with patch.dict(sys.modules, stubs):
+        spec.loader.exec_module(module)
+    return module
+
+
+def load_api_module(obd_class, commands):
+    """Load api.py with supplied OBD behavior and command table."""
+
+    class BleakError(Exception):
+        """Stub base Bleak error."""
+
+    class OBDStatus:
+        NOT_CONNECTED = "not connected"
+        CAR_CONNECTED = "car connected"
+
+    package_name = "test_nissan_leaf_api_library"
+    package = _module(package_name)
+    package.__path__ = []
+    stubs = {
+        package_name: package,
+        f"{package_name}.elm327": _module(
+            f"{package_name}.elm327", OBDStatus=OBDStatus
+        ),
+        f"{package_name}.obd": _module(
+            f"{package_name}.obd", OBD=obd_class
+        ),
+        f"{package_name}.profiles": _module(
+            f"{package_name}.profiles",
+            DEFAULT_GENERATION="auto",
+            VALID_GENERATIONS={"auto", "ze0", "aze0", "ze1"},
+            get_generation_commands=lambda *args, **kwargs: commands,
+        ),
+        "bleak": _module("bleak"),
+        "bleak.backends": _module("bleak.backends"),
+        "bleak.backends.device": _module(
+            "bleak.backends.device", BLEDevice=object
+        ),
+        "bleak.exc": _module("bleak.exc", BleakError=BleakError),
+    }
+
+    module_name = f"{package_name}.api"
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        COMPONENT / "py_nissan_leaf_obd_ble" / "api.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    stubs[module_name] = module
+    with patch.dict(sys.modules, stubs):
+        spec.loader.exec_module(module)
+    return module, OBDStatus, BleakError
 
 
 class FakeApi:
@@ -197,6 +300,14 @@ def make_coordinator(result, cache=None, available=True):
     coordinator._slow_poll = 300
     coordinator._xs_poll = 3600
     coordinator._cache_data = dict(cache or {})
+    coordinator.last_poll_attempt = None
+    coordinator.last_successful_update = None
+    coordinator.last_fresh_value_count = 0
+    coordinator.last_poll_succeeded = False
+    coordinator.last_updated_by_key = {}
+    coordinator._zero_fresh_poll_logged = True
+    coordinator._partial_poll_logged = False
+    coordinator._last_stale_critical_keys = frozenset()
     coordinator._normalize_metrics = lambda data: False
     coordinator._async_save_cache = AsyncMock()
     coordinator.update_interval = None
@@ -287,6 +398,7 @@ class CoordinatorReliabilityTest(unittest.IsolatedAsyncioTestCase):
             {"state_of_charge": None, "odometer": 98439},
             {"state_of_charge": 61.0, "odometer": 98000},
         )
+        coordinator._last_stale_critical_keys = frozenset({"state_of_charge"})
 
         data = await coordinator._async_update_data()
 
@@ -294,6 +406,33 @@ class CoordinatorReliabilityTest(unittest.IsolatedAsyncioTestCase):
             data, {"state_of_charge": 61.0, "odometer": 98439}
         )
         self.assertEqual(coordinator.update_interval, timedelta(seconds=10))
+        self.assertTrue(coordinator.last_poll_succeeded)
+        self.assertEqual(coordinator.last_fresh_value_count, 1)
+        self.assertIn("odometer", coordinator.last_updated_by_key)
+        coordinator._async_save_cache.assert_awaited_once_with()
+
+    async def test_transport_partial_data_uses_slow_polling(self):
+        coordinator = make_coordinator(
+            {"display_state_of_charge": 48},
+            {"state_of_charge": 53, "odometer": 98439},
+        )
+        coordinator.api.last_poll_succeeded = False
+        coordinator.api.last_failed_command = "odometer"
+
+        with self.assertLogs(coordinator_module._LOGGER, level="WARNING"):
+            data = await coordinator._async_update_data()
+
+        self.assertEqual(
+            data,
+            {
+                "display_state_of_charge": 48,
+                "state_of_charge": 53,
+                "odometer": 98439,
+            },
+        )
+        self.assertFalse(coordinator.last_poll_succeeded)
+        self.assertIsNone(coordinator.last_successful_update)
+        self.assertEqual(coordinator.update_interval, timedelta(seconds=300))
         coordinator._async_save_cache.assert_awaited_once_with()
 
     async def test_fresh_connectable_route_is_resolved_for_every_poll(self):
@@ -333,6 +472,18 @@ class CoordinatorReliabilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data, {"state_of_charge": 61.0})
         self.assertEqual(coordinator.update_interval, timedelta(seconds=300))
         coordinator._async_save_cache.assert_not_awaited()
+        self.assertFalse(coordinator.last_poll_succeeded)
+        self.assertEqual(coordinator.last_fresh_value_count, 0)
+
+    async def test_zero_fresh_poll_logs_warning_once(self):
+        coordinator = make_coordinator({}, {"state_of_charge": 61.0})
+        coordinator._zero_fresh_poll_logged = False
+
+        with self.assertLogs(coordinator_module._LOGGER, level="WARNING") as logs:
+            await coordinator._async_update_data()
+
+        self.assertIn("produced no fresh values", logs.output[0])
+        self.assertTrue(coordinator._zero_fresh_poll_logged)
 
     async def test_absent_adapter_returns_cache_without_polling(self):
         coordinator = make_coordinator(
@@ -352,6 +503,131 @@ class CoordinatorReliabilityTest(unittest.IsolatedAsyncioTestCase):
             coordinator_module.bluetooth.BluetoothReachabilityIntent.CONNECTION,
         )
 
+    async def test_cancellation_is_not_converted_to_cached_success(self):
+        started = asyncio.Event()
+
+        class BlockingApi:
+            async def async_get_data(self, **kwargs):
+                started.set()
+                await asyncio.Event().wait()
+
+        coordinator = make_coordinator(None, {"state_of_charge": 61.0})
+        coordinator.api = BlockingApi()
+        update_task = asyncio.create_task(coordinator._async_update_data())
+        await started.wait()
+
+        update_task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await update_task
+
+
+class ApiPollingReliabilityTest(unittest.IsolatedAsyncioTestCase):
+    """Exercise command ordering, probe handling, and partial poll results."""
+
+    async def test_failed_probe_continues_with_critical_ze1_commands(self):
+        commands = {
+            name: types.SimpleNamespace(name=name)
+            for name in (
+                "unknown",
+                "power_switch",
+                "lbc",
+                "odometer",
+                "display_state_of_charge",
+            )
+        }
+
+        class Connection:
+            def __init__(self, status):
+                self._status = status
+                self.queries = []
+                self.close = AsyncMock()
+
+            def status(self):
+                return self._status.CAR_CONNECTED
+
+            async def query(self, command, force):
+                self.queries.append(command.name)
+                if command.name == "unknown":
+                    return types.SimpleNamespace(messages=[], value=None)
+                return types.SimpleNamespace(
+                    messages=[object()], value={command.name: len(self.queries)}
+                )
+
+        class OBD:
+            connection = None
+
+            @classmethod
+            async def create(cls, *args, **kwargs):
+                return cls.connection
+
+        module, status, _ = load_api_module(OBD, commands)
+        OBD.connection = Connection(status)
+
+        client = module.NissanLeafObdBleApiClient()
+        data = await client.async_get_data(
+            ble_device=object(), generation="ze1"
+        )
+
+        self.assertEqual(
+            OBD.connection.queries,
+            [
+                "unknown",
+                "lbc",
+                "odometer",
+                "display_state_of_charge",
+                "power_switch",
+            ],
+        )
+        self.assertEqual(
+            set(data),
+            {"display_state_of_charge", "odometer", "lbc", "power_switch"},
+        )
+        self.assertTrue(client.last_poll_succeeded)
+        self.assertNotIn("odometer_can", module._PRIORITY_COMMANDS["auto"])
+        OBD.connection.close.assert_awaited_once_with()
+
+    async def test_late_transport_failure_returns_collected_values(self):
+        commands = {
+            name: types.SimpleNamespace(name=name)
+            for name in ("unknown", "lbc", "odometer")
+        }
+
+        class OBD:
+            connection = None
+
+            @classmethod
+            async def create(cls, *args, **kwargs):
+                return cls.connection
+
+        module, status, bleak_error = load_api_module(OBD, commands)
+
+        class Connection:
+            def __init__(self):
+                self.close = AsyncMock()
+
+            def status(self):
+                return status.CAR_CONNECTED
+
+            async def query(self, command, force):
+                if command.name == "unknown":
+                    return types.SimpleNamespace(messages=[object()], value=None)
+                if command.name == "lbc":
+                    return types.SimpleNamespace(
+                        messages=[object()], value={"state_of_charge": 48}
+                    )
+                raise bleak_error("disconnected")
+
+        OBD.connection = Connection()
+
+        client = module.NissanLeafObdBleApiClient()
+        data = await client.async_get_data(
+            ble_device=object(), generation="ze1"
+        )
+
+        self.assertEqual(data, {"state_of_charge": 48})
+        self.assertFalse(client.last_poll_succeeded)
+        self.assertEqual(client.last_failed_command, "odometer")
+        OBD.connection.close.assert_awaited_once_with()
 
 class BleShutdownWiringTest(unittest.TestCase):
     """Ensure shutdown remains clean while fresh connections still reset."""
@@ -366,7 +642,7 @@ class BleShutdownWiringTest(unittest.TestCase):
             "close() must not send ATZ",
         )
         self.assertTrue(
-            _contains_constant(method_node(module, "create"), b"ATZ"),
+            _contains_constant(method_node(module, "_initialize"), b"ATZ"),
             "create() must still send ATZ during initialization",
         )
 
@@ -381,6 +657,94 @@ class BleShutdownWiringTest(unittest.TestCase):
         self.assertIn(True, close_assignments)
         self.assertNotIn(False, close_assignments)
         self.assertIn(False, open_assignments)
+
+
+class ElmInitializationLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    """Ensure an incomplete ELM initialization cannot retain its BLE port."""
+
+    async def test_cancelled_initialization_closes_port(self):
+        initialization_started = asyncio.Event()
+
+        class Serial:
+            instances = []
+
+            def __init__(self, *args):
+                self.timeout = None
+                self.write_timeout = None
+                self.closed = 0
+                self.instances.append(self)
+
+            async def close(self):
+                self.closed += 1
+
+        module = load_elm327_module(Serial)
+
+        async def blocked_initialize(self, protocol, check_voltage, start_low_power):
+            self._ELM327__status = module.OBDStatus.ELM_CONNECTED
+            initialization_started.set()
+            await asyncio.Event().wait()
+
+        module.ELM327._initialize = blocked_initialize
+        create_task = asyncio.create_task(
+            module.ELM327.create(object(), protocol="6", timeout=5)
+        )
+        await initialization_started.wait()
+
+        create_task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await create_task
+
+        self.assertEqual(Serial.instances[0].closed, 1)
+
+    async def test_partial_initialization_closes_port(self):
+        class Serial:
+            instances = []
+
+            def __init__(self, *args):
+                self.timeout = None
+                self.write_timeout = None
+                self.closed = 0
+                self.instances.append(self)
+
+            async def close(self):
+                self.closed += 1
+
+        module = load_elm327_module(Serial)
+
+        async def partial_initialize(self, protocol, check_voltage, start_low_power):
+            self._ELM327__status = module.OBDStatus.ELM_CONNECTED
+
+        module.ELM327._initialize = partial_initialize
+
+        elm = await module.ELM327.create(object(), protocol="6", timeout=5)
+
+        self.assertEqual(elm.status(), module.OBDStatus.NOT_CONNECTED)
+        self.assertEqual(Serial.instances[0].closed, 1)
+
+    async def test_transport_failure_during_initialization_closes_port(self):
+        class Serial:
+            instances = []
+
+            def __init__(self, *args):
+                self.timeout = None
+                self.write_timeout = None
+                self.closed = 0
+                self.instances.append(self)
+
+            async def close(self):
+                self.closed += 1
+
+        module = load_elm327_module(Serial)
+
+        async def failed_initialize(self, protocol, check_voltage, start_low_power):
+            raise module.BleakError("disconnected")
+
+        module.ELM327._initialize = failed_initialize
+
+        elm = await module.ELM327.create(object(), protocol="6", timeout=5)
+
+        self.assertEqual(elm.status(), module.OBDStatus.NOT_CONNECTED)
+        self.assertEqual(Serial.instances[0].closed, 1)
 
 
 class BleSerialLifecycleTest(unittest.IsolatedAsyncioTestCase):
@@ -467,6 +831,233 @@ class BleSerialLifecycleTest(unittest.IsolatedAsyncioTestCase):
         stale_client.disconnect.assert_awaited_once_with()
         fresh_client.start_notify.assert_awaited_once()
         self.assertIs(serial._client, fresh_client)
+
+    async def test_cancelled_notification_setup_disconnects_client(self):
+        class Device:
+            name = "IOS-VLINK"
+
+        class Services:
+            @staticmethod
+            def get_characteristic(characteristic):
+                return object()
+
+        setup_started = asyncio.Event()
+
+        class Client:
+            services = Services()
+
+            def __init__(self):
+                self.disconnect = AsyncMock()
+
+            async def start_notify(self, characteristic, callback):
+                setup_started.set()
+                await asyncio.Event().wait()
+
+        client = Client()
+
+        async def establish_connection(*args, **kwargs):
+            return client
+
+        bleserial_module.establish_connection = establish_connection
+        serial = bleserial_module.bleserial(Device(), "service", "read", "write")
+        open_task = asyncio.create_task(serial.open())
+        await setup_started.wait()
+
+        open_task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await open_task
+
+        client.disconnect.assert_awaited_once_with()
+        self.assertIsNone(serial._client)
+
+    async def test_disconnect_wakes_pending_read(self):
+        class Device:
+            name = "IOS-VLINK"
+
+        class Services:
+            @staticmethod
+            def get_characteristic(characteristic):
+                return object()
+
+        class Client:
+            services = Services()
+            callback = None
+
+            async def start_notify(self, characteristic, callback):
+                return None
+
+        client = Client()
+
+        async def establish_connection(*args, disconnected_callback, **kwargs):
+            client.callback = disconnected_callback
+            return client
+
+        bleserial_module.establish_connection = establish_connection
+        serial = bleserial_module.bleserial(Device(), "service", "read", "write")
+        serial.timeout = 1
+        await serial.open()
+        read_task = asyncio.create_task(serial.read())
+        await asyncio.sleep(0)
+
+        with self.assertLogs(bleserial_module.logger, level="ERROR"):
+            client.callback(client)
+            with self.assertRaises(bleserial_module.BleakError):
+                await asyncio.wait_for(read_task, timeout=0.1)
+
+    async def test_write_fails_when_disconnected(self):
+        class Device:
+            name = "IOS-VLINK"
+
+        serial = bleserial_module.bleserial(Device(), "service", "read", "write")
+
+        with self.assertRaisesRegex(
+            bleserial_module.BleakError, "not connected"
+        ):
+            await serial.write(b"ATZ")
+
+    async def test_write_uses_configured_timeout(self):
+        class Device:
+            name = "IOS-VLINK"
+
+        class Client:
+            async def write_gatt_char(self, characteristic, data):
+                await asyncio.Event().wait()
+
+        serial = bleserial_module.bleserial(Device(), "service", "read", "write")
+        serial._client = Client()
+        serial.write_timeout = 0.01
+
+        with self.assertRaises(asyncio.TimeoutError):
+            await serial.write(b"ATZ")
+
+    async def test_read_uses_configured_timeout(self):
+        class Device:
+            name = "IOS-VLINK"
+
+        serial = bleserial_module.bleserial(Device(), "service", "read", "write")
+        serial._client = object()
+        serial.timeout = 0.01
+
+        with self.assertRaises(asyncio.TimeoutError):
+            await serial.read()
+
+    async def test_stop_notify_timeout_still_disconnects(self):
+        class Device:
+            name = "IOS-VLINK"
+
+        class Client:
+            def __init__(self):
+                self.disconnect = AsyncMock()
+
+            async def stop_notify(self, characteristic):
+                await asyncio.Event().wait()
+
+        client = Client()
+        serial = bleserial_module.bleserial(Device(), "service", "read", "write")
+        serial._client = client
+
+        with patch.object(bleserial_module, "DISCONNECT_TIMEOUT", 0.01):
+            await serial.close()
+
+        client.disconnect.assert_awaited_once_with()
+        self.assertIsNone(serial._client)
+
+    async def test_disconnect_timeout_does_not_block_close(self):
+        class Device:
+            name = "IOS-VLINK"
+
+        class Client:
+            async def stop_notify(self, characteristic):
+                return None
+
+            async def disconnect(self):
+                await asyncio.Event().wait()
+
+        serial = bleserial_module.bleserial(Device(), "service", "read", "write")
+        serial._client = Client()
+
+        with patch.object(bleserial_module, "DISCONNECT_TIMEOUT", 0.01):
+            await asyncio.wait_for(serial.close(), timeout=0.1)
+
+        self.assertIsNone(serial._client)
+
+    async def test_cancelled_stop_notify_still_disconnects(self):
+        class Device:
+            name = "IOS-VLINK"
+
+        stop_started = asyncio.Event()
+
+        class Client:
+            def __init__(self):
+                self.disconnect = AsyncMock()
+
+            async def stop_notify(self, characteristic):
+                stop_started.set()
+                await asyncio.Event().wait()
+
+        client = Client()
+        serial = bleserial_module.bleserial(Device(), "service", "read", "write")
+        serial._client = client
+        close_task = asyncio.create_task(serial.close())
+        await stop_started.wait()
+
+        close_task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await close_task
+
+        client.disconnect.assert_awaited_once_with()
+        self.assertIsNone(serial._client)
+
+    async def test_cancelled_disconnect_finishes_before_close_returns(self):
+        class Device:
+            name = "IOS-VLINK"
+
+        disconnect_started = asyncio.Event()
+        allow_disconnect = asyncio.Event()
+        disconnect_finished = asyncio.Event()
+
+        class Client:
+            async def stop_notify(self, characteristic):
+                return None
+
+            async def disconnect(self):
+                disconnect_started.set()
+                await allow_disconnect.wait()
+                disconnect_finished.set()
+
+        serial = bleserial_module.bleserial(Device(), "service", "read", "write")
+        serial._client = Client()
+        close_task = asyncio.create_task(serial.close())
+        await disconnect_started.wait()
+
+        close_task.cancel()
+        await asyncio.sleep(0)
+        close_task.cancel()
+        await asyncio.sleep(0)
+        allow_disconnect.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await close_task
+
+        self.assertTrue(disconnect_finished.is_set())
+        self.assertIsNone(serial._client)
+
+    async def test_cancelled_disconnect_coroutine_does_not_loop_forever(self):
+        class Device:
+            name = "IOS-VLINK"
+
+        class Client:
+            async def stop_notify(self, characteristic):
+                return None
+
+            async def disconnect(self):
+                raise asyncio.CancelledError
+
+        serial = bleserial_module.bleserial(Device(), "service", "read", "write")
+        serial._client = Client()
+
+        await asyncio.wait_for(serial.close(), timeout=0.1)
+
+        self.assertIsNone(serial._client)
 
 
 if __name__ == "__main__":

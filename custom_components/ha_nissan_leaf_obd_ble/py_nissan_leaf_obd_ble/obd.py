@@ -48,7 +48,7 @@ class OBD:
         self,
         device: BLEDevice,
         fast=True,
-        timeout=0.1,
+        timeout=5.0,
     ) -> None:
         """Initialise."""
         self.interface = None
@@ -64,7 +64,7 @@ class OBD:
         device: BLEDevice,
         protocol=None,
         fast=True,
-        timeout=0.1,
+        timeout=5.0,
         check_voltage=True,
         start_low_power=False,
         service_uuid=None,
@@ -83,7 +83,8 @@ class OBD:
             characteristic_uuid_read=characteristic_uuid_read,
             characteristic_uuid_write=characteristic_uuid_write,
         )
-        if self.status() == OBDStatus.NOT_CONNECTED:
+        if not self.is_connected():
+            await self.close()
             return None
         return self
 
@@ -110,7 +111,7 @@ class OBD:
         )
 
         # if the connection failed, close it
-        if self.status() == OBDStatus.NOT_CONNECTED:
+        if not self.is_connected():
             # the ELM327 class will report its own errors
             await self.close()
 
@@ -154,10 +155,11 @@ class OBD:
     async def close(self):
         """Close the connection, and clears supported_commands."""
 
-        if self.interface is not None:
+        interface = self.interface
+        self.interface = None
+        if interface is not None:
             logger.info("Closing connection")
-            await self.interface.close()
-            self.interface = None
+            await interface.close()
 
     def status(self):
         """Return the OBD connection status."""
