@@ -118,40 +118,43 @@ class OBD:
     async def __set_header(self, header) -> bool:
         if header == self.__last_header:
             return True
-        r = await self.interface.send_and_parse(b"AT SH " + header + b" ")
-        if not r:
-            logger.debug("Set Header ('AT SH %s') did not return data", header)
-            return False
-        if "\n".join([m.raw() for m in r]) != "OK":
-            logger.debug("Set Header ('AT SH %s') did not return 'OK'", header)
-            return False
 
-        r = await self.interface.send_and_parse(b"AT FC SH " + header + b" ")
-        if not r:
-            logger.debug("Set Header ('AT FC SH %s') did not return data", header)
-            return False
-        if "\n".join([m.raw() for m in r]) != "OK":
-            logger.debug("Set Header ('AT FC SH %s') did not return 'OK'", header)
-            return False
+        setup_commands = (
+            (b"AT SH " + header + b" ", "AT SH"),
+            (b"AT FC SH " + header + b" ", "AT FC SH"),
+            (b"AT FC SD 30 00 00", "AT FC SD"),
+            (b"AT FC SM 1", "AT FC SM"),
+        )
+        header_selected = False
+        for attempt in range(2):
+            flow_control_ok = True
+            for setup_command, name in setup_commands:
+                response = await self.interface.send_and_parse(setup_command)
+                is_ok = bool(response) and "\n".join(
+                    message.raw() for message in response
+                ) == "OK"
+                if is_ok:
+                    if name == "AT SH":
+                        header_selected = True
+                    continue
 
-        r = await self.interface.send_and_parse(b"AT FC SD 30 00 00")
-        if not r:
-            logger.debug("Set Header ('AT FC SD %s') did not return data", header)
-            return False
-        if "\n".join([m.raw() for m in r]) != "OK":
-            logger.debug("Set Header ('AT FC SD %s') did not return 'OK'", header)
-            return False
+                logger.debug(
+                    "Header %s setup step %s did not return OK (attempt %d)",
+                    header,
+                    name,
+                    attempt + 1,
+                )
+                if name != "AT SH":
+                    flow_control_ok = False
+                break
 
-        r = await self.interface.send_and_parse(b"AT FC SM 1")
-        if not r:
-            logger.debug("Set Header ('AT FC SM %s') did not return data", header)
-            return False
-        if "\n".join([m.raw() for m in r]) != "OK":
-            logger.debug("Set Header ('AT FC SM %s') did not return 'OK'", header)
-            return False
+            if header_selected and flow_control_ok:
+                self.__last_header = header
+                return True
 
-        self.__last_header = header
-        return True
+        # Some ELM-compatible adapters reject flow-control configuration but
+        # still accept diagnostic requests after AT SH selected the ECU.
+        return header_selected
 
     async def close(self):
         """Close the connection, and clears supported_commands."""
