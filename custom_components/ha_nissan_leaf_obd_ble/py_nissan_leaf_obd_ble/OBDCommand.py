@@ -104,7 +104,7 @@ class OBDCommand:
         if messages:
             r.value = self.decode(messages)
         else:
-            logger.info("%s did not receive any acceptable messages", str(self))
+            logger.debug("%s did not receive any acceptable messages", str(self))
 
         return r
 
