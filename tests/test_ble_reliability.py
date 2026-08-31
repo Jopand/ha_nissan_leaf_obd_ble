@@ -280,6 +280,7 @@ def load_obd_module():
     class OBDResponse:
         def __init__(self, *args, **kwargs):
             self.messages = []
+            self.raw_lines = []
             self.value = None
 
     package_name = "test_nissan_leaf_obd_header_library"
@@ -954,6 +955,125 @@ class ObdHeaderSetupTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result)
         self.assertEqual(obd._OBD__last_header, b"797")
+
+    async def test_lbc_uses_filtered_long_timeout_and_clears_filter(self):
+        module = load_obd_module()
+
+        class Message:
+            @staticmethod
+            def raw():
+                return "OK"
+
+        class Interface:
+            def __init__(self):
+                self.events = []
+
+            def status(self):
+                return module.OBDStatus.CAR_CONNECTED
+
+            async def send_and_parse(self, command):
+                self.events.append(("setup", command))
+                return [Message()]
+
+            async def send_raw(self, command):
+                self.events.append(("query", command))
+                return ["NO DATA"]
+
+            @staticmethod
+            def parse_lines(lines):
+                return []
+
+        command = types.SimpleNamespace(
+            name="lbc",
+            header=b"79B",
+            command=b"022101",
+            fast=False,
+        )
+        obd = object.__new__(module.OBD)
+        obd.interface = Interface()
+        obd.fast = True
+        obd._OBD__last_header = ()
+        obd._OBD__frame_counts = {}
+
+        response = await obd._query_lbc(command)
+
+        self.assertEqual(
+            response.raw_lines,
+            ["NO DATA", "CAF1 fallback:", "NO DATA"],
+        )
+        self.assertEqual(
+            obd.interface.events,
+            [
+                ("setup", b"AT SH 79B "),
+                ("setup", b"AT FC SH 79B "),
+                ("setup", b"AT FC SD 30 00 00"),
+                ("setup", b"AT FC SM 1"),
+                ("setup", b"AT ST 96"),
+                ("setup", b"AT CRA 7BB"),
+                ("setup", b"AT FC SD 30 00 0A"),
+                ("query", b"022101"),
+                ("setup", b"AT CAF1"),
+                ("query", b"21018"),
+                ("setup", b"AT CAF0"),
+                ("setup", b"AT CRA"),
+            ],
+        )
+
+    async def test_lbc_auto_format_fallback_decodes_soc(self):
+        module = load_obd_module()
+
+        class SetupMessage:
+            @staticmethod
+            def raw():
+                return "OK"
+
+        class Frame:
+            raw = "7BB10356101"
+
+        class ParsedMessage:
+            frames = [Frame()]
+            data = b"\x61\x01\x00"
+
+            @staticmethod
+            def raw():
+                return "7BB10356101"
+
+        class Interface:
+            def status(self):
+                return module.OBDStatus.CAR_CONNECTED
+
+            async def send_and_parse(self, command):
+                return [SetupMessage()]
+
+            async def send_raw(self, command):
+                return ["AUTO"] if command == b"21018" else ["NO DATA"]
+
+            @staticmethod
+            def parse_lines(lines):
+                return [ParsedMessage()] if lines == ["AUTO"] else []
+
+        class Command:
+            name = "lbc"
+            header = b"79B"
+            command = b"022101"
+            fast = False
+
+            @staticmethod
+            def __call__(messages):
+                return types.SimpleNamespace(
+                    value={"state_of_charge": 47}, raw_lines=[]
+                )
+
+        obd = object.__new__(module.OBD)
+        obd.interface = Interface()
+        obd.fast = True
+        obd._OBD__last_header = ()
+        obd._OBD__frame_counts = {}
+
+        response = await obd._query_lbc(Command())
+
+        self.assertEqual(response.value, {"state_of_charge": 47})
+        self.assertEqual(response.raw_lines, ["AUTO"])
 
 
 class BleShutdownWiringTest(unittest.TestCase):

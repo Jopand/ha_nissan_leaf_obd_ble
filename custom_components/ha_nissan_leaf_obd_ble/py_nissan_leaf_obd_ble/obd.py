@@ -225,6 +225,9 @@ class OBD:
         if cmd.can_monitor:
             return await self._query_can_broadcast(cmd)
 
+        if cmd.name == "lbc":
+            return await self._query_lbc(cmd)
+
         # if the user forces, skip all checks
         if not force and not self.test_cmd(cmd):
             return OBDResponse()
@@ -232,8 +235,13 @@ class OBD:
         if not await self.__set_header(cmd.header):
             return OBDResponse(cmd)
 
+        return await self.__capture_command(cmd)
+
+    async def __capture_command(self, cmd, command_string=None):
+        """Send and decode a command after its ECU header has been configured."""
+
         logger.debug("Sending command: %s", cmd)
-        cmd_string = self.__build_command_string(cmd)
+        cmd_string = command_string or self.__build_command_string(cmd)
         raw_lines = await self.interface.send_raw(cmd_string)
         messages = self.interface.parse_lines(raw_lines)
 
@@ -260,6 +268,62 @@ class OBD:
         decoded_response = cmd(messages)  # applies command-specific message sizing before decode
         decoded_response.raw_lines = response.raw_lines
         return decoded_response
+
+    async def _query_lbc(self, cmd):
+        """Read the multi-frame battery response using ZE1-compatible timing."""
+
+        if not await self.__set_header(cmd.header):
+            return OBDResponse(cmd)
+
+        # The LBC can take longer to start its eight-frame ISO-TP response.
+        # Filtering 7BB also prevents unrelated EV-CAN traffic from delaying
+        # ELM-compatible adapters while they assemble the response.
+        setup_commands = (
+            b"AT ST 96",
+            b"AT CRA 7BB",
+            b"AT FC SD 30 00 0A",
+        )
+        for setup_command in setup_commands:
+            response = await self.interface.send_and_parse(setup_command)
+            if not response or "\n".join(message.raw() for message in response) != "OK":
+                logger.debug("LBC setup command %r did not return OK", setup_command)
+
+        try:
+            result = await self.__capture_command(cmd)
+            if result.value is not None:
+                return result
+
+            # Some VLink/ELM-compatible adapters only handle this ISO-TP
+            # transaction reliably with automatic CAN formatting. The final
+            # digit asks the ELM to wait for all eight LBC response frames.
+            response = await self.interface.send_and_parse(b"AT CAF1")
+            if not response or "\n".join(
+                message.raw() for message in response
+            ) != "OK":
+                logger.debug("Unable to enable CAN auto formatting for LBC retry")
+
+            try:
+                fallback = await self.__capture_command(cmd, b"21018")
+            finally:
+                if self.status() != OBDStatus.NOT_CONNECTED:
+                    response = await self.interface.send_and_parse(b"AT CAF0")
+                    if not response or "\n".join(
+                        message.raw() for message in response
+                    ) != "OK":
+                        logger.debug("Unable to restore raw CAN formatting")
+
+            if fallback.value is not None:
+                return fallback
+            result.raw_lines.extend(["CAF1 fallback:", *fallback.raw_lines])
+            return result
+        finally:
+            if self.status() != OBDStatus.NOT_CONNECTED:
+                # A bare AT CRA clears the receive filter for later ECUs.
+                response = await self.interface.send_and_parse(b"AT CRA")
+                if not response or "\n".join(
+                    message.raw() for message in response
+                ) != "OK":
+                    logger.debug("Unable to clear LBC receive filter")
 
     async def _query_kwp2000(self, cmd):
         """Execute a KWP2000 multi-step diagnostic sequence.
