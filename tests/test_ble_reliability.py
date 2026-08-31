@@ -270,6 +270,48 @@ def load_api_module(obd_class, commands):
     return module, OBDStatus, BleakError
 
 
+def load_obd_module():
+    """Load obd.py with minimal transport and response stubs."""
+
+    class OBDStatus:
+        NOT_CONNECTED = "not connected"
+        CAR_CONNECTED = "car connected"
+
+    class OBDResponse:
+        def __init__(self, *args, **kwargs):
+            self.messages = []
+            self.value = None
+
+    package_name = "test_nissan_leaf_obd_header_library"
+    package = _module(package_name)
+    package.__path__ = []
+    stubs = {
+        package_name: package,
+        f"{package_name}.elm327": _module(
+            f"{package_name}.elm327", ELM327=object, OBDStatus=OBDStatus
+        ),
+        f"{package_name}.OBDResponse": _module(
+            f"{package_name}.OBDResponse", OBDResponse=OBDResponse
+        ),
+        "bleak": _module("bleak"),
+        "bleak.backends": _module("bleak.backends"),
+        "bleak.backends.device": _module(
+            "bleak.backends.device", BLEDevice=object
+        ),
+    }
+
+    module_name = f"{package_name}.obd"
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        COMPONENT / "py_nissan_leaf_obd_ble" / "obd.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    stubs[module_name] = module
+    with patch.dict(sys.modules, stubs):
+        spec.loader.exec_module(module)
+    return module
+
+
 class FakeApi:
     """Return or raise a configured poll result."""
 
@@ -577,11 +619,11 @@ class ApiPollingReliabilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             OBD.connection.queries,
             [
-                "lbc",
-                "plug_state",
-                "charge_mode",
                 "unknown",
                 "power_switch",
+                "plug_state",
+                "charge_mode",
+                "lbc",
                 "odometer",
                 "display_state_of_charge",
             ],
@@ -600,7 +642,16 @@ class ApiPollingReliabilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(client.last_poll_succeeded)
         self.assertEqual(
             module._PRIORITY_COMMANDS["ze1"],
-            ("lbc", "plug_state", "charge_mode"),
+            (
+                "unknown",
+                "power_switch",
+                "gear_position",
+                "bat_12v_voltage",
+                "bat_12v_current",
+                "plug_state",
+                "charge_mode",
+                "lbc",
+            ),
         )
         OBD.connection.close.assert_awaited_once_with()
 
@@ -647,12 +698,79 @@ class ApiPollingReliabilityTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             OBD.connection.queries,
-            ["lbc", "lbc", "plug_state", "charge_mode"],
+            ["plug_state", "charge_mode", "lbc", "lbc"],
         )
         self.assertEqual(
             data,
             {"state_of_charge": 48, "plug_state": 1, "charge_mode": 2},
         )
+        self.assertTrue(client.last_poll_succeeded)
+
+    async def test_missing_plug_and_lbc_are_retried_after_warmup(self):
+        commands = {
+            name: types.SimpleNamespace(name=name)
+            for name in (
+                "bat_12v_voltage",
+                "plug_state",
+                "charge_mode",
+                "lbc",
+            )
+        }
+
+        class OBD:
+            connection = None
+
+            @classmethod
+            async def create(cls, *args, **kwargs):
+                return cls.connection
+
+        module, status, _ = load_api_module(OBD, commands)
+
+        class Connection:
+            def __init__(self):
+                self.queries = []
+                self.close = AsyncMock()
+
+            def status(self):
+                return status.CAR_CONNECTED
+
+            async def query(self, command, force):
+                self.queries.append(command.name)
+                attempt = self.queries.count(command.name)
+                values = {
+                    "bat_12v_voltage": {"bat_12v_voltage": 13.2},
+                    "charge_mode": {"charge_mode": "Not charging"},
+                    "plug_state": {"plug_state": "Not plugged"},
+                    "lbc": {"state_of_charge": 47},
+                }
+                value = (
+                    None
+                    if command.name in {"plug_state", "lbc"} and attempt == 1
+                    else values[command.name]
+                )
+                response = types.SimpleNamespace(
+                    messages=[], value=value, raw_lines=[]
+                )
+                return response
+
+        OBD.connection = Connection()
+        client = module.NissanLeafObdBleApiClient()
+
+        data = await client.async_get_data(ble_device=object(), generation="ze1")
+
+        self.assertEqual(
+            OBD.connection.queries,
+            [
+                "bat_12v_voltage",
+                "plug_state",
+                "charge_mode",
+                "lbc",
+                "plug_state",
+                "lbc",
+            ],
+        )
+        self.assertEqual(data["state_of_charge"], 47)
+        self.assertEqual(data["plug_state"], "Not plugged")
         self.assertTrue(client.last_poll_succeeded)
 
     async def test_optional_queries_stop_after_budget(self):
@@ -709,7 +827,7 @@ class ApiPollingReliabilityTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             OBD.connection.queries,
-            ["lbc", "plug_state", "charge_mode"],
+            ["plug_state", "charge_mode", "lbc"],
         )
         self.assertEqual(
             data,
@@ -769,6 +887,74 @@ class ApiPollingReliabilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(client.last_poll_succeeded)
         self.assertEqual(client.last_failed_command, "odometer")
         OBD.connection.close.assert_awaited_once_with()
+
+
+class ObdHeaderSetupTest(unittest.IsolatedAsyncioTestCase):
+    """Exercise ELM-compatible header setup fallbacks."""
+
+    async def test_flow_control_failure_still_allows_diagnostic_query(self):
+        module = load_obd_module()
+
+        class Message:
+            @staticmethod
+            def raw():
+                return "OK"
+
+        class Interface:
+            def __init__(self):
+                self.commands = []
+
+            async def send_and_parse(self, command):
+                self.commands.append(command)
+                if command.startswith(b"AT SH"):
+                    return [Message()]
+                return []
+
+        obd = object.__new__(module.OBD)
+        obd.interface = Interface()
+        obd._OBD__last_header = ()
+
+        result = await obd._OBD__set_header(b"79B")
+
+        self.assertTrue(result)
+        self.assertEqual(
+            obd.interface.commands,
+            [
+                b"AT SH 79B ",
+                b"AT FC SH 79B ",
+                b"AT SH 79B ",
+                b"AT FC SH 79B ",
+            ],
+        )
+        self.assertEqual(obd._OBD__last_header, ())
+
+    async def test_header_setup_retries_and_caches_complete_success(self):
+        module = load_obd_module()
+
+        class Message:
+            @staticmethod
+            def raw():
+                return "OK"
+
+        class Interface:
+            def __init__(self):
+                self.commands = []
+
+            async def send_and_parse(self, command):
+                self.commands.append(command)
+                if len(self.commands) == 1:
+                    return []
+                return [Message()]
+
+        obd = object.__new__(module.OBD)
+        obd.interface = Interface()
+        obd._OBD__last_header = ()
+
+        result = await obd._OBD__set_header(b"797")
+
+        self.assertTrue(result)
+        self.assertEqual(obd._OBD__last_header, b"797")
+
 
 class BleShutdownWiringTest(unittest.TestCase):
     """Ensure shutdown remains clean while fresh connections still reset."""

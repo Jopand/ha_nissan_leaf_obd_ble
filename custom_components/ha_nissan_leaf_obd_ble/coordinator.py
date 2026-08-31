@@ -197,11 +197,18 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
             self._zero_fresh_poll_logged = False
 
         if not poll_succeeded and not self._partial_poll_logged:
-            _LOGGER.warning(
-                "OBD poll returned partial data after command %s; fresh values: %s",
-                getattr(self.api, "last_failed_command", None) or "unknown",
-                sorted(fresh_data),
-            )
+            failed_command = getattr(self.api, "last_failed_command", None)
+            if failed_command:
+                _LOGGER.warning(
+                    "OBD poll returned partial data after command %s; fresh values: %s",
+                    failed_command,
+                    sorted(fresh_data),
+                )
+            else:
+                _LOGGER.warning(
+                    "OBD poll did not refresh all critical data; fresh values: %s",
+                    sorted(fresh_data),
+                )
             self._partial_poll_logged = True
         elif poll_succeeded and self._partial_poll_logged:
             _LOGGER.info("OBD polling recovered from partial updates")
