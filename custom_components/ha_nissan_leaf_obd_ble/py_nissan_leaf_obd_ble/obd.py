@@ -115,42 +115,43 @@ class OBD:
             # the ELM327 class will report its own errors
             await self.close()
 
-    async def __set_header(self, header) -> None:
+    async def __set_header(self, header) -> bool:
         if header == self.__last_header:
-            return
+            return True
         r = await self.interface.send_and_parse(b"AT SH " + header + b" ")
         if not r:
-            logger.info("Set Header ('AT SH %s') did not return data", header)
-            return
+            logger.debug("Set Header ('AT SH %s') did not return data", header)
+            return False
         if "\n".join([m.raw() for m in r]) != "OK":
-            logger.info("Set Header ('AT SH %s') did not return 'OK'", header)
-            return
+            logger.debug("Set Header ('AT SH %s') did not return 'OK'", header)
+            return False
 
         r = await self.interface.send_and_parse(b"AT FC SH " + header + b" ")
         if not r:
-            logger.info("Set Header ('AT FC SH %s') did not return data", header)
-            return
+            logger.debug("Set Header ('AT FC SH %s') did not return data", header)
+            return False
         if "\n".join([m.raw() for m in r]) != "OK":
-            logger.info("Set Header ('AT FC SH %s') did not return 'OK'", header)
-            return
+            logger.debug("Set Header ('AT FC SH %s') did not return 'OK'", header)
+            return False
 
         r = await self.interface.send_and_parse(b"AT FC SD 30 00 00")
         if not r:
-            logger.info("Set Header ('AT FC SD %s') did not return data", header)
-            return
+            logger.debug("Set Header ('AT FC SD %s') did not return data", header)
+            return False
         if "\n".join([m.raw() for m in r]) != "OK":
-            logger.info("Set Header ('AT FC SD %s') did not return 'OK'", header)
-            return
+            logger.debug("Set Header ('AT FC SD %s') did not return 'OK'", header)
+            return False
 
         r = await self.interface.send_and_parse(b"AT FC SM 1")
         if not r:
-            logger.info("Set Header ('AT FC SM %s') did not return data", header)
-            return
+            logger.debug("Set Header ('AT FC SM %s') did not return data", header)
+            return False
         if "\n".join([m.raw() for m in r]) != "OK":
-            logger.info("Set Header ('AT FC SM %s') did not return 'OK'", header)
-            return
+            logger.debug("Set Header ('AT FC SM %s') did not return 'OK'", header)
+            return False
 
         self.__last_header = header
+        return True
 
     async def close(self):
         """Close the connection, and clears supported_commands."""
@@ -158,7 +159,7 @@ class OBD:
         interface = self.interface
         self.interface = None
         if interface is not None:
-            logger.info("Closing connection")
+            logger.debug("Closing connection")
             await interface.close()
 
     def status(self):
@@ -225,9 +226,10 @@ class OBD:
         if not force and not self.test_cmd(cmd):
             return OBDResponse()
 
-        await self.__set_header(cmd.header)
+        if not await self.__set_header(cmd.header):
+            return OBDResponse(cmd)
 
-        logger.info("Sending command: %s", cmd)
+        logger.debug("Sending command: %s", cmd)
         cmd_string = self.__build_command_string(cmd)
         raw_lines = await self.interface.send_raw(cmd_string)
         messages = self.interface.parse_lines(raw_lines)
@@ -236,7 +238,7 @@ class OBD:
         response.raw_lines = raw_lines or []
 
         if not messages:
-            logger.info("No valid OBD Messages returned")
+            logger.debug("No valid OBD Messages returned")
             return response
 
         for f in messages[0].frames:
@@ -249,7 +251,7 @@ class OBD:
 
         for m in messages:
             if len(m.data) == 0 and (m.raw() == "NO DATA" or m.raw() == "CAN ERROR"):
-                logger.info("Vehicle not responding")
+                logger.debug("Vehicle not responding")
                 return response
 
         decoded_response = cmd(messages)  # applies command-specific message sizing before decode
@@ -264,7 +266,8 @@ class OBD:
         """
         
         # Set header to target ECU (0x743 for CAR-CAN odometer)
-        await self.__set_header(cmd.header)
+        if not await self.__set_header(cmd.header):
+            return OBDResponse(cmd)
         
         raw_lines_all = []
         

@@ -33,9 +33,8 @@ from .metrics import merge_cached_values, normalize_metrics
 _LOGGER = logging.getLogger(__name__)
 
 _CRITICAL_FRESHNESS_KEYS = {
-    "display_state_of_charge",
-    "hv_battery_Ah",
-    "odometer",
+    "charge_mode",
+    "plug_state",
     "state_of_charge",
 }
 
@@ -311,8 +310,9 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
             self._record_fresh_poll(
                 new_data, poll_succeeded=poll_succeeded
             )
-            poll_interval = self._fast_poll if poll_succeeded else self._slow_poll
-            self.update_interval = timedelta(seconds=poll_interval)
+            # Fresh values prove that the car is awake. Retry quickly so a
+            # short arrival window is not lost after one partial BLE poll.
+            self.update_interval = timedelta(seconds=self._fast_poll)
             await self._async_save_cache()
             _LOGGER.debug(
                 "OBD poll completed with %d fresh values from %s: %s",

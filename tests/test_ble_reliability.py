@@ -411,7 +411,7 @@ class CoordinatorReliabilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("odometer", coordinator.last_updated_by_key)
         coordinator._async_save_cache.assert_awaited_once_with()
 
-    async def test_transport_partial_data_uses_slow_polling(self):
+    async def test_transport_partial_data_uses_fast_polling(self):
         coordinator = make_coordinator(
             {"display_state_of_charge": 48},
             {"state_of_charge": 53, "odometer": 98439},
@@ -432,7 +432,7 @@ class CoordinatorReliabilityTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(coordinator.last_poll_succeeded)
         self.assertIsNone(coordinator.last_successful_update)
-        self.assertEqual(coordinator.update_interval, timedelta(seconds=300))
+        self.assertEqual(coordinator.update_interval, timedelta(seconds=10))
         coordinator._async_save_cache.assert_awaited_once_with()
 
     async def test_fresh_connectable_route_is_resolved_for_every_poll(self):
@@ -524,13 +524,15 @@ class CoordinatorReliabilityTest(unittest.IsolatedAsyncioTestCase):
 class ApiPollingReliabilityTest(unittest.IsolatedAsyncioTestCase):
     """Exercise command ordering, probe handling, and partial poll results."""
 
-    async def test_failed_probe_continues_with_critical_ze1_commands(self):
+    async def test_critical_ze1_commands_run_first(self):
         commands = {
             name: types.SimpleNamespace(name=name)
             for name in (
                 "unknown",
                 "power_switch",
                 "lbc",
+                "plug_state",
+                "charge_mode",
                 "odometer",
                 "display_state_of_charge",
             )
@@ -549,8 +551,12 @@ class ApiPollingReliabilityTest(unittest.IsolatedAsyncioTestCase):
                 self.queries.append(command.name)
                 if command.name == "unknown":
                     return types.SimpleNamespace(messages=[], value=None)
+                if command.name == "lbc":
+                    value = {"state_of_charge": 48}
+                else:
+                    value = {command.name: len(self.queries)}
                 return types.SimpleNamespace(
-                    messages=[object()], value={command.name: len(self.queries)}
+                    messages=[object()], value=value
                 )
 
         class OBD:
@@ -571,25 +577,154 @@ class ApiPollingReliabilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             OBD.connection.queries,
             [
-                "unknown",
                 "lbc",
+                "plug_state",
+                "charge_mode",
+                "unknown",
+                "power_switch",
                 "odometer",
                 "display_state_of_charge",
-                "power_switch",
             ],
         )
         self.assertEqual(
             set(data),
-            {"display_state_of_charge", "odometer", "lbc", "power_switch"},
+            {
+                "state_of_charge",
+                "plug_state",
+                "charge_mode",
+                "display_state_of_charge",
+                "odometer",
+                "power_switch",
+            },
         )
         self.assertTrue(client.last_poll_succeeded)
-        self.assertNotIn("odometer_can", module._PRIORITY_COMMANDS["auto"])
+        self.assertEqual(
+            module._PRIORITY_COMMANDS["ze1"],
+            ("lbc", "plug_state", "charge_mode"),
+        )
         OBD.connection.close.assert_awaited_once_with()
+
+    async def test_empty_lbc_response_is_retried_once(self):
+        commands = {
+            name: types.SimpleNamespace(name=name)
+            for name in ("lbc", "plug_state", "charge_mode")
+        }
+
+        class OBD:
+            connection = None
+
+            @classmethod
+            async def create(cls, *args, **kwargs):
+                return cls.connection
+
+        module, status, _ = load_api_module(OBD, commands)
+
+        class Connection:
+            def __init__(self):
+                self.queries = []
+                self.close = AsyncMock()
+
+            def status(self):
+                return status.CAR_CONNECTED
+
+            async def query(self, command, force):
+                self.queries.append(command.name)
+                if command.name == "lbc" and self.queries.count("lbc") == 1:
+                    return types.SimpleNamespace(messages=[], value=None)
+                values = {
+                    "lbc": {"state_of_charge": 48},
+                    "plug_state": {"plug_state": 1},
+                    "charge_mode": {"charge_mode": 2},
+                }
+                return types.SimpleNamespace(
+                    messages=[object()], value=values[command.name]
+                )
+
+        OBD.connection = Connection()
+        client = module.NissanLeafObdBleApiClient()
+
+        data = await client.async_get_data(ble_device=object(), generation="ze1")
+
+        self.assertEqual(
+            OBD.connection.queries,
+            ["lbc", "lbc", "plug_state", "charge_mode"],
+        )
+        self.assertEqual(
+            data,
+            {"state_of_charge": 48, "plug_state": 1, "charge_mode": 2},
+        )
+        self.assertTrue(client.last_poll_succeeded)
+
+    async def test_optional_queries_stop_after_budget(self):
+        commands = {
+            name: types.SimpleNamespace(name=name)
+            for name in (
+                "lbc",
+                "plug_state",
+                "charge_mode",
+                "odometer",
+                "tp_fl",
+            )
+        }
+
+        class OBD:
+            connection = None
+
+            @classmethod
+            async def create(cls, *args, **kwargs):
+                return cls.connection
+
+        module, status, _ = load_api_module(OBD, commands)
+
+        class Connection:
+            def __init__(self):
+                self.queries = []
+                self.close = AsyncMock()
+
+            def status(self):
+                return status.CAR_CONNECTED
+
+            async def query(self, command, force):
+                self.queries.append(command.name)
+                values = {
+                    "lbc": {"state_of_charge": 48},
+                    "plug_state": {"plug_state": "Plugged"},
+                    "charge_mode": {"charge_mode": "L2 charging"},
+                }
+                return types.SimpleNamespace(
+                    messages=[object()], value=values[command.name]
+                )
+
+        OBD.connection = Connection()
+        client = module.NissanLeafObdBleApiClient()
+
+        with patch.object(
+            module.time,
+            "monotonic",
+            side_effect=(0, 0, 0, 0, 21, 21, 21),
+        ):
+            data = await client.async_get_data(
+                ble_device=object(), generation="ze1"
+            )
+
+        self.assertEqual(
+            OBD.connection.queries,
+            ["lbc", "plug_state", "charge_mode"],
+        )
+        self.assertEqual(
+            data,
+            {
+                "state_of_charge": 48,
+                "plug_state": "Plugged",
+                "charge_mode": "L2 charging",
+            },
+        )
+        self.assertTrue(client.last_poll_succeeded)
 
     async def test_late_transport_failure_returns_collected_values(self):
         commands = {
             name: types.SimpleNamespace(name=name)
-            for name in ("unknown", "lbc", "odometer")
+            for name in ("lbc", "plug_state", "charge_mode", "odometer")
         }
 
         class OBD:
@@ -609,13 +744,16 @@ class ApiPollingReliabilityTest(unittest.IsolatedAsyncioTestCase):
                 return status.CAR_CONNECTED
 
             async def query(self, command, force):
-                if command.name == "unknown":
-                    return types.SimpleNamespace(messages=[object()], value=None)
-                if command.name == "lbc":
-                    return types.SimpleNamespace(
-                        messages=[object()], value={"state_of_charge": 48}
-                    )
-                raise bleak_error("disconnected")
+                values = {
+                    "lbc": {"state_of_charge": 48},
+                    "plug_state": {"plug_state": 1},
+                    "charge_mode": {"charge_mode": 2},
+                }
+                if command.name == "odometer":
+                    raise bleak_error("disconnected")
+                return types.SimpleNamespace(
+                    messages=[object()], value=values[command.name]
+                )
 
         OBD.connection = Connection()
 
@@ -624,8 +762,11 @@ class ApiPollingReliabilityTest(unittest.IsolatedAsyncioTestCase):
             ble_device=object(), generation="ze1"
         )
 
-        self.assertEqual(data, {"state_of_charge": 48})
-        self.assertFalse(client.last_poll_succeeded)
+        self.assertEqual(
+            data,
+            {"state_of_charge": 48, "plug_state": 1, "charge_mode": 2},
+        )
+        self.assertTrue(client.last_poll_succeeded)
         self.assertEqual(client.last_failed_command, "odometer")
         OBD.connection.close.assert_awaited_once_with()
 
