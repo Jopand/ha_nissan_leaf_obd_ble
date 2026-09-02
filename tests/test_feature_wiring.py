@@ -95,6 +95,52 @@ class FeatureWiringTest(unittest.TestCase):
             )
         )
 
+    def test_refresh_button_and_diagnostics_are_wired(self):
+        platforms = assignment_value(COMPONENT / "__init__.py", "PLATFORMS")
+        platform_names = {
+            element.attr
+            for element in platforms.elts
+            if isinstance(element, ast.Attribute)
+        }
+        self.assertEqual(platform_names, {"BUTTON", "SENSOR"})
+
+        button_module = ast.parse((COMPONENT / "button.py").read_text())
+        press_method = next(
+            node
+            for node in ast.walk(button_module)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "async_press"
+        )
+        self.assertTrue(
+            any(
+                isinstance(node, ast.Attribute)
+                and node.attr == "async_request_refresh"
+                for node in ast.walk(press_method)
+            )
+        )
+
+        diagnostic_descriptions = assignment_value(
+            COMPONENT / "sensor.py", "DIAGNOSTIC_SENSORS"
+        )
+        diagnostic_keys = {
+            ast.literal_eval(
+                next(
+                    keyword.value
+                    for keyword in call.keywords
+                    if keyword.arg == "key"
+                )
+            )
+            for call in diagnostic_descriptions.elts
+        }
+        self.assertEqual(
+            diagnostic_keys,
+            {
+                "last_poll_attempt",
+                "last_successful_update",
+                "last_fresh_value_count",
+                "last_ble_route",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

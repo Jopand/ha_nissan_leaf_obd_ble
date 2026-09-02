@@ -20,6 +20,8 @@ integration. It includes the following functionality:
 | ZE0/AZE0 battery decoder | Generation-specific byte offsets |
 | Sensor list | Trimmed to the selected generation's supported sensors |
 | Data persistence | Last-known values persisted to Home Assistant storage |
+| BLE route selection | Fresh connectable Home Assistant route selected for every complete poll |
+| Manual refresh | Diagnostic button requests an immediate complete OBD poll |
 
 ---
 
@@ -209,6 +211,11 @@ separately and is not expected to equal SOH.
 Sensor values are saved to HA's `.storage/` directory after each successful
 poll.  After a Home Assistant restart, all sensors immediately display their
 last known values — no need to drive the car home first.
+
+The device also exposes diagnostic entities for the last poll attempt, last
+successful update, number of fresh values in the latest poll, and selected BLE
+route. Use the **Refresh OBD** button while the car is awake to request the same
+full read path used by scheduled polls and Bluetooth advertisements.
 
 ---
 

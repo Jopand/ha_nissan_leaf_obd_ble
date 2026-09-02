@@ -54,7 +54,8 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
             _LOGGER,
             name=DOMAIN,
             update_interval=timedelta(seconds=DEFAULT_FAST_POLL),
-            always_update=False,
+            # Poll diagnostics can change even when all cached vehicle values do not.
+            always_update=True,
         )
 
         self._address: str = entry.data[CONF_ADDRESS]
@@ -68,7 +69,9 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
         self.last_successful_update: datetime | None = None
         self.last_fresh_value_count = 0
         self.last_poll_succeeded = False
+        self.last_ble_route = "none"
         self.last_updated_by_key: dict[str, datetime] = {}
+        self._poll_lock = asyncio.Lock()
         self._zero_fresh_poll_logged = False
         self._partial_poll_logged = False
         self._last_stale_critical_keys: frozenset[str] = frozenset()
@@ -228,7 +231,22 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
             _LOGGER.info("All critical OBD values are refreshing again")
         self._last_stale_critical_keys = retained_critical
 
+    def _ble_route_name(self, ble_device: Any) -> str:
+        """Return the Home Assistant scanner name for a selected BLE route."""
+        details = getattr(ble_device, "details", None)
+        source = details.get("source") if isinstance(details, dict) else None
+        if not source:
+            return "unknown"
+
+        scanner = bluetooth.async_scanner_by_source(self.hass, source)
+        return getattr(scanner, "name", None) or source
+
     async def _async_update_data(self) -> dict[str, Any]:
+        """Run one complete OBD session at a time."""
+        async with self._poll_lock:
+            return await self._async_poll_data()
+
+    async def _async_poll_data(self) -> dict[str, Any]:
         """Fetch fresh data from the OBD adapter.
 
         Returns the merged cache (persisted + live) so sensors always display
@@ -244,6 +262,7 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
         )
 
         if ble_device is None:
+            self.last_ble_route = "none"
             self._record_failed_poll("no connectable BLE route", warn=False)
             reason = bluetooth.async_address_reachability_diagnostics(
                 self.hass,
@@ -261,6 +280,8 @@ class NissanLeafCoordinator(DataUpdateCoordinator):
             # Return a copy so the coordinator's internal reference can't be
             # mutated externally.
             return dict(self._cache_data)
+
+        self.last_ble_route = self._ble_route_name(ble_device)
 
         try:
             new_data = await asyncio.wait_for(

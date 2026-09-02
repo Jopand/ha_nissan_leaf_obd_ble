@@ -2,7 +2,7 @@
 
 Sets up one coordinator per config entry (one per OBD adapter / Leaf),
 registers a Bluetooth callback so new polls are triggered immediately when
-the adapter comes back into range, and forwards entries to the sensor platform.
+the adapter comes back into range, and forwards entries to entity platforms.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from .metrics import migrate_nominal_ah
 
 __version__ = VERSION
 
-PLATFORMS = [Platform.SENSOR]
+PLATFORMS = [Platform.BUTTON, Platform.SENSOR]
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
