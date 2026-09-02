@@ -2,15 +2,49 @@
 
 from __future__ import annotations
 
-from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_ADDRESS
+from homeassistant.const import CONF_ADDRESS, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import CONF_GENERATION, DOMAIN, GENERATION_AUTO, NAME
 from .entity import NissanLeafObdBleEntity
 from .generations import get_sensors_for_generation
+
+
+DIAGNOSTIC_SENSORS = (
+    SensorEntityDescription(
+        key="last_poll_attempt",
+        name="Last poll attempt",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:clock-outline",
+    ),
+    SensorEntityDescription(
+        key="last_successful_update",
+        name="Last successful update",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:clock-check-outline",
+    ),
+    SensorEntityDescription(
+        key="last_fresh_value_count",
+        name="Fresh values last poll",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:counter",
+    ),
+    SensorEntityDescription(
+        key="last_ble_route",
+        name="BLE route",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:bluetooth-connect",
+    ),
+)
 
 
 async def async_setup_entry(
@@ -23,9 +57,12 @@ async def async_setup_entry(
     generation = entry.data.get(CONF_GENERATION, GENERATION_AUTO)
 
     descriptions = get_sensors_for_generation(generation)
-    async_add_entities(
-        NissanLeafSensor(coordinator, entry, desc) for desc in descriptions
+    entities = [NissanLeafSensor(coordinator, entry, desc) for desc in descriptions]
+    entities.extend(
+        NissanLeafDiagnosticSensor(coordinator, entry, desc)
+        for desc in DIAGNOSTIC_SENSORS
     )
+    async_add_entities(entities)
 
 
 class NissanLeafSensor(NissanLeafObdBleEntity, SensorEntity):
@@ -64,3 +101,12 @@ class NissanLeafSensor(NissanLeafObdBleEntity, SensorEntity):
     def icon(self) -> str | None:
         """Return the icon defined in the entity description."""
         return self.entity_description.icon
+
+
+class NissanLeafDiagnosticSensor(NissanLeafSensor):
+    """A coordinator poll diagnostic sensor."""
+
+    @property
+    def native_value(self):
+        """Return the current coordinator diagnostic value."""
+        return getattr(self.coordinator, self.entity_description.key)

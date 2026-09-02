@@ -86,6 +86,7 @@ def load_coordinator_module():
             "homeassistant.components.bluetooth",
             async_ble_device_from_address=lambda *args, **kwargs: object(),
             async_address_reachability_diagnostics=lambda *args, **kwargs: "reachable",
+            async_scanner_by_source=lambda *args, **kwargs: None,
             BluetoothReachabilityIntent=BluetoothReachabilityIntent,
         ),
         "homeassistant.config_entries": _module(
@@ -347,7 +348,9 @@ def make_coordinator(result, cache=None, available=True):
     coordinator.last_successful_update = None
     coordinator.last_fresh_value_count = 0
     coordinator.last_poll_succeeded = False
+    coordinator.last_ble_route = "none"
     coordinator.last_updated_by_key = {}
+    coordinator._poll_lock = asyncio.Lock()
     coordinator._zero_fresh_poll_logged = True
     coordinator._partial_poll_logged = False
     coordinator._last_stale_critical_keys = frozenset()
@@ -361,6 +364,7 @@ def make_coordinator(result, cache=None, available=True):
     coordinator_module.bluetooth.async_address_reachability_diagnostics = Mock(
         return_value="not connectable"
     )
+    coordinator_module.bluetooth.async_scanner_by_source = Mock(return_value=None)
     return coordinator
 
 
@@ -505,6 +509,59 @@ class CoordinatorReliabilityTest(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_selected_route_uses_home_assistant_scanner_name(self):
+        coordinator = make_coordinator({"state_of_charge": 61.0})
+        coordinator.ble_device = types.SimpleNamespace(
+            details={"source": "proxy-source-id"}
+        )
+        coordinator_module.bluetooth.async_ble_device_from_address = Mock(
+            return_value=coordinator.ble_device
+        )
+        coordinator_module.bluetooth.async_scanner_by_source = Mock(
+            return_value=types.SimpleNamespace(name="Salt Level")
+        )
+
+        await coordinator._async_update_data()
+
+        self.assertEqual(coordinator.last_ble_route, "Salt Level")
+        coordinator_module.bluetooth.async_scanner_by_source.assert_called_once_with(
+            coordinator.hass, "proxy-source-id"
+        )
+
+    async def test_complete_poll_sessions_do_not_overlap(self):
+        first_started = asyncio.Event()
+        allow_first_to_finish = asyncio.Event()
+
+        class LockCheckingApi:
+            def __init__(self):
+                self.active_calls = 0
+                self.max_active_calls = 0
+                self.calls = 0
+
+            async def async_get_data(self, **kwargs):
+                self.calls += 1
+                self.active_calls += 1
+                self.max_active_calls = max(self.max_active_calls, self.active_calls)
+                if self.calls == 1:
+                    first_started.set()
+                    await allow_first_to_finish.wait()
+                self.active_calls -= 1
+                return {"state_of_charge": 61.0}
+
+        coordinator = make_coordinator(None)
+        coordinator.api = LockCheckingApi()
+        first_poll = asyncio.create_task(coordinator._async_update_data())
+        await first_started.wait()
+        second_poll = asyncio.create_task(coordinator._async_update_data())
+        await asyncio.sleep(0)
+
+        self.assertEqual(coordinator.api.calls, 1)
+        allow_first_to_finish.set()
+        await asyncio.gather(first_poll, second_poll)
+
+        self.assertEqual(coordinator.api.calls, 2)
+        self.assertEqual(coordinator.api.max_active_calls, 1)
+
     async def test_no_valid_fields_keeps_cache_without_saving(self):
         coordinator = make_coordinator(
             {"state_of_charge": None}, {"state_of_charge": 61.0}
@@ -540,6 +597,7 @@ class CoordinatorReliabilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data, {"state_of_charge": 61.0})
         self.assertEqual(coordinator.api.calls, 0)
         self.assertEqual(coordinator.update_interval, timedelta(seconds=3600))
+        self.assertEqual(coordinator.last_ble_route, "none")
         coordinator_module.bluetooth.async_address_reachability_diagnostics.assert_called_once_with(
             coordinator.hass,
             "AA:BB:CC:DD:EE:FF",
